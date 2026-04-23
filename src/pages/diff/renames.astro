@@ -1,0 +1,110 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { renames, counts, fetchedAt, error } = await getDiffData(Astro.url);
+const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown';
+---
+<Layout title="Possible Renames" active="/diff/renames" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>🔍 Possible Renames / Typos</h1>
+      <div class="meta">{renames.length} close name match(es) · fetched {fetchedAtStr}</div>
+    </div>
+  </div>
+
+  {error && <div class="error-banner">⚠️ {error}</div>}
+
+  <p style="color: var(--color-muted); margin-bottom: 24px; font-size: 13px;">
+    These collection names exist on one side only but look very similar to a name on the other.
+    They may be the same collection renamed during a manual prod promotion, or a typo.
+    Dismissals are stored per session.
+  </p>
+
+  {renames.length === 0 && <p class="empty">No close name matches found.</p>}
+
+  <div id="rename-list" data-section-search>
+    {renames.length > 0 && (
+      <div class="section-search-bar" style="margin-bottom: 16px;">
+        <label class="visually-hidden" for="renames-search">Search possible renames</label>
+        <input
+          type="search"
+          id="renames-search"
+          class="section-search-input"
+          placeholder="Fuzzy search (space = AND)…"
+          autocomplete="off"
+        />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+    )}
+    {renames.map((r: any) => (
+      <div
+        class="rename-card"
+        data-dev={r.dev}
+        data-prod={r.prod}
+        data-section-row
+        data-search={`${r.dev} ${r.prod} ${r.hint}`.toLowerCase()}
+      >
+        <div class="rename-row">
+          <div class="rename-side">
+            <label>Dev</label>
+            <code class="mono search-hl-target">{r.dev}</code>
+          </div>
+          <div style="color: var(--color-muted); padding-top: 18px;">↔</div>
+          <div class="rename-side">
+            <label>Prod</label>
+            <code class="mono search-hl-target">{r.prod}</code>
+          </div>
+          <div class="rename-side" style="flex: 0 0 auto; text-align: right;">
+            <label>Similarity</label>
+            <strong style="color: var(--color-warning)">{r.similarity}%</strong>
+          </div>
+        </div>
+        <div style="color: var(--color-muted); font-size: 12px; margin-bottom: 12px;">
+          {r.hint}
+        </div>
+        <div class="rename-actions">
+          <button class="btn dismiss-btn" data-dismiss="same" style="font-size: 12px; padding: 4px 10px;">
+            Same item — skip
+          </button>
+          <button class="btn dismiss-btn" data-dismiss="different" style="font-size: 12px; padding: 4px 10px;">
+            Different — keep both
+          </button>
+        </div>
+      </div>
+    ))}
+  </div>
+</Layout>
+
+<script>
+const STORAGE_KEY = 'dismissed-renames';
+
+function getDismissed(): string[] {
+  try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]'); }
+  catch { return []; }
+}
+
+function dismiss(card: HTMLElement) {
+  const key = `${card.dataset.dev}__${card.dataset.prod}`;
+  const dismissed = getDismissed();
+  dismissed.push(key);
+  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(dismissed));
+  card.style.transition = 'opacity 0.2s';
+  card.style.opacity = '0';
+  setTimeout(() => card.remove(), 200);
+}
+
+// Hide already-dismissed on load
+for (const card of document.querySelectorAll<HTMLElement>('.rename-card')) {
+  const key = `${card.dataset.dev}__${card.dataset.prod}`;
+  if (getDismissed().includes(key)) card.style.display = 'none';
+}
+
+// Handle dismiss clicks
+document.getElementById('rename-list')?.addEventListener('click', (e) => {
+  const btn = (e.target as Element).closest<HTMLElement>('.dismiss-btn');
+  if (!btn) return;
+  const card = btn.closest<HTMLElement>('.rename-card');
+  if (card) dismiss(card);
+});
+</script>

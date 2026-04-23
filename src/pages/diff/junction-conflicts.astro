@@ -1,0 +1,374 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { junctionConflicts, counts, fetchedAt, error } = await getDiffData(Astro.url);
+
+const pending  = junctionConflicts.filter((c: any) => !c.isAliased);
+const resolved = junctionConflicts.filter((c: any) =>  c.isAliased);
+
+const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown';
+---
+<Layout title="Junction Conflicts" active="/diff/junction-conflicts" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>⚡ Junction Conflicts</h1>
+      <div class="meta">
+        {pending.length} pending · {resolved.length} resolved · fetched {fetchedAtStr}
+      </div>
+    </div>
+  </div>
+
+  {error && <div class="error-banner">⚠️ {error}</div>}
+
+  <div class="info-box" style="margin-bottom: 28px;">
+    <strong>What is this?</strong> Directus auto-generates junction table names by joining the two related
+    collection names (e.g. <code class="mono">collection_a_collection_b</code>).
+    If that name already exists on prod, Directus appends <code class="mono">_1</code>, <code class="mono">_2</code>, etc.
+    This causes dev and prod to have the <em>same logical table</em> under <em>different names</em> —
+    making the diff noisy and breaking codegen type references.
+    <br/><br/>
+    <strong>Fix options:</strong>
+    <ul style="margin: 8px 0 0 16px; line-height: 1.8;">
+      <li>
+        <strong>Fix via API</strong> — deletes the mis-named prod junction and all its relations via the
+        Directus API. The correctly-named junction from dev then appears in <em>Dev Only</em> and can be
+        applied normally. <span style="color: var(--color-error);">Any data in the junction table will be lost.</span>
+      </li>
+      <li>
+        <strong>Save Alias</strong> — records the mapping so this pair is suppressed from Dev Only / Prod Only
+        without touching prod. Useful when the junction has live data you can't lose yet.
+      </li>
+    </ul>
+  </div>
+
+  {pending.length === 0 && resolved.length === 0 && (
+    <p class="empty">No junction table naming conflicts detected.</p>
+  )}
+
+  <!-- ── Pending conflicts ─────────────────────────────────────────── -->
+  {pending.length > 0 && (
+    <>
+      <div class="section-header">Pending ({pending.length})</div>
+      {pending.map((c: any) => (
+        <div class="conflict-card" data-dev={c.dev} data-prod={c.prod}>
+          <div class="rename-row">
+            <div class="rename-side">
+              <label>Dev (codegen target)</label>
+              <code class="mono">{c.dev}</code>
+            </div>
+            <div style="color: var(--color-warning); padding-top: 18px; font-size: 18px;">⚡</div>
+            <div class="rename-side">
+              <label>Prod (actual name)</label>
+              <code class="mono" style="color: var(--color-warning)">{c.prod}</code>
+            </div>
+            <div class="rename-side" style="flex: 0 0 auto; text-align: right;">
+              <label>Similarity</label>
+              <strong style="color: var(--color-warning)">{c.similarity}%</strong>
+            </div>
+          </div>
+
+          <div style="color: var(--color-muted); font-size: 12px; margin-bottom: 14px;">{c.hint}</div>
+
+          <!-- Side-by-side field comparison -->
+          {(c.devFields?.length > 0 || c.prodFields?.length > 0) && (
+            <div class="field-compare">
+              <div class="field-compare-col">
+                <div class="field-compare-header">Dev fields ({c.devFields?.length ?? 0})</div>
+                <table>
+                  <thead><tr><th>Field</th><th>Type</th></tr></thead>
+                  <tbody>
+                    {(c.devFields ?? []).map((f: any) => (
+                      <tr>
+                        <td><code class="mono">{f.field}</code></td>
+                        <td><span class="badge badge-options">{f.type ?? '?'}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div class="field-compare-col">
+                <div class="field-compare-header">Prod fields ({c.prodFields?.length ?? 0})</div>
+                <table>
+                  <thead><tr><th>Field</th><th>Type</th></tr></thead>
+                  <tbody>
+                    {(c.prodFields ?? []).map((f: any) => (
+                      <tr>
+                        <td><code class="mono">{f.field}</code></td>
+                        <td><span class="badge badge-options">{f.type ?? '?'}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <!-- Action buttons -->
+          <div class="rename-actions" style="margin-top: 12px; flex-wrap: wrap; gap: 8px;">
+            <button class="btn fix-api-btn" style="font-size: 12px; padding: 5px 12px; border-color: var(--color-error); color: var(--color-error);">
+              Fix via API
+            </button>
+            <button class="btn alias-btn" data-action="save" style="font-size: 12px; padding: 5px 12px;">
+              Save Alias (suppress from diff)
+            </button>
+            <span class="conflict-msg" style="font-size: 12px; color: var(--color-error); flex-basis: 100%;"></span>
+          </div>
+        </div>
+      ))}
+    </>
+  )}
+
+  <!-- ── Resolved (aliased) ─────────────────────────────────────────── -->
+  {resolved.length > 0 && (
+    <>
+      <div class="section-header" style="margin-top: 40px;">Resolved / Aliased ({resolved.length})</div>
+      <p style="color: var(--color-muted); font-size: 13px; margin-bottom: 16px;">
+        These pairs are recorded in <code class="mono">.junction-aliases.json</code> and are suppressed
+        from Dev Only / Prod Only. Remove an alias once the prod table has been fixed and the
+        conflict no longer exists.
+      </p>
+      {resolved.map((c: any) => (
+        <div class="conflict-card conflict-card--resolved" data-dev={c.dev} data-prod={c.prod}>
+          <div class="rename-row">
+            <div class="rename-side">
+              <label>Dev</label>
+              <code class="mono">{c.dev}</code>
+            </div>
+            <div style="color: var(--color-success); padding-top: 18px;">✓</div>
+            <div class="rename-side">
+              <label>Prod</label>
+              <code class="mono">{c.prod}</code>
+            </div>
+          </div>
+          <div class="rename-actions">
+            <button class="btn fix-api-btn" style="font-size: 12px; padding: 5px 12px; border-color: var(--color-error); color: var(--color-error);">
+              Fix via API
+            </button>
+            <button class="btn alias-btn" data-action="remove" style="font-size: 12px; padding: 5px 12px;">
+              Remove Alias
+            </button>
+            <span class="conflict-msg" style="font-size: 12px; color: var(--color-error);"></span>
+          </div>
+        </div>
+      ))}
+    </>
+  )}
+
+  <!-- ── Confirmation modal ─────────────────────────────────────────── -->
+  <dialog id="fix-confirm-dialog" class="confirm-dialog">
+    <div class="confirm-dialog-inner">
+      <h2 style="font-size: 16px; margin-bottom: 12px;">Fix junction conflict via API</h2>
+      <div class="warn-box">
+        <strong>This will permanently delete from prod:</strong>
+        <ul style="margin: 8px 0 0 16px; line-height: 1.8;">
+          <li>The junction collection: <code class="mono" id="confirm-prod-name"></code></li>
+          <li>All its fields and FK relations</li>
+          <li>Any relations from parent collections pointing to it</li>
+          <li><strong style="color: var(--color-error);">All relationship data stored in this table</strong></li>
+        </ul>
+      </div>
+      <p style="font-size: 13px; color: var(--color-muted); margin: 12px 0;">
+        After the fix, the correctly-named dev junction
+        (<code class="mono" id="confirm-dev-name"></code>) will appear in
+        <strong>Dev Only</strong> and can be applied via the normal flow.
+      </p>
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button class="btn" id="confirm-cancel-btn">Cancel</button>
+        <button class="btn" id="confirm-proceed-btn"
+          style="border-color: var(--color-error); color: var(--color-error);">
+          Delete from prod and fix
+        </button>
+      </div>
+      <div id="confirm-error" style="margin-top: 10px; font-size: 12px; color: var(--color-error);"></div>
+    </div>
+  </dialog>
+</Layout>
+
+<style>
+.info-box {
+  background: rgba(99,102,241,0.08);
+  border: 1px solid rgba(99,102,241,0.25);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.conflict-card {
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+  background: rgba(245,158,11,0.04);
+}
+
+.conflict-card--resolved {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  opacity: 0.75;
+}
+
+.field-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.field-compare-col {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.field-compare-header {
+  background: rgba(255,255,255,0.04);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* Confirmation modal */
+.confirm-dialog {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0;
+  color: var(--color-text);
+  max-width: 540px;
+  width: 90vw;
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.confirm-dialog-inner {
+  padding: 24px;
+}
+
+.warn-box {
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  margin-bottom: 4px;
+}
+</style>
+
+<script>
+const dialog    = document.getElementById('fix-confirm-dialog') as HTMLDialogElement;
+const prodLabel = document.getElementById('confirm-prod-name')!;
+const devLabel  = document.getElementById('confirm-dev-name')!;
+const cancelBtn = document.getElementById('confirm-cancel-btn')!;
+const proceedBtn= document.getElementById('confirm-proceed-btn') as HTMLButtonElement;
+const confirmErr= document.getElementById('confirm-error')!;
+
+let activeCard: HTMLElement | null = null;
+
+cancelBtn.addEventListener('click', () => dialog.close());
+dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+
+document.addEventListener('click', async (e) => {
+
+  // ── Fix via API ─────────────────────────────────────────────────────
+  const fixBtn = (e.target as Element).closest<HTMLButtonElement>('.fix-api-btn');
+  if (fixBtn) {
+    const card = fixBtn.closest<HTMLElement>('.conflict-card')!;
+    activeCard = card;
+    prodLabel.textContent = card.dataset.prod ?? '';
+    devLabel.textContent  = card.dataset.dev  ?? '';
+    confirmErr.textContent = '';
+    proceedBtn.disabled = false;
+    proceedBtn.textContent = 'Delete from prod and fix';
+    dialog.showModal();
+    return;
+  }
+
+  // ── Save / Remove alias ─────────────────────────────────────────────
+  const aliasBtn = (e.target as Element).closest<HTMLButtonElement>('.alias-btn');
+  if (aliasBtn) {
+    const card   = aliasBtn.closest<HTMLElement>('.conflict-card')!;
+    const msgEl  = card.querySelector<HTMLElement>('.conflict-msg')!;
+    const dev    = card.dataset.dev!;
+    const prod   = card.dataset.prod!;
+    const action = aliasBtn.dataset.action as 'save' | 'remove';
+
+    aliasBtn.disabled = true;
+    aliasBtn.textContent = action === 'save' ? 'Saving…' : 'Removing…';
+    msgEl.textContent = '';
+
+    try {
+      const res  = await fetch('/api/junction-alias', {
+        method: action === 'save' ? 'POST' : 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dev, prod }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        location.reload();
+      } else {
+        throw new Error(json.error ?? 'Unknown error');
+      }
+    } catch (err: unknown) {
+      aliasBtn.disabled = false;
+      aliasBtn.textContent = action === 'save' ? 'Save Alias (suppress from diff)' : 'Remove Alias';
+      msgEl.textContent = err instanceof Error ? err.message : String(err);
+    }
+    return;
+  }
+});
+
+// ── Confirm: proceed with API fix ─────────────────────────────────────
+proceedBtn.addEventListener('click', async () => {
+  if (!activeCard) return;
+  const prod = activeCard.dataset.prod!;
+  const dev  = activeCard.dataset.dev!;
+
+  proceedBtn.disabled = true;
+  proceedBtn.textContent = 'Deleting…';
+  confirmErr.textContent = '';
+
+  try {
+    const res  = await fetch('/api/junction-fix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prod }),
+    });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error ?? 'Unknown error');
+
+    dialog.close();
+
+    // Replace the card content with a success notice
+    activeCard.style.borderColor = 'var(--color-success)';
+    activeCard.style.background  = 'rgba(34,197,94,0.06)';
+    activeCard.innerHTML = `
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+        <span style="color:var(--color-success); font-size:18px;">✓</span>
+        <strong>Prod junction deleted</strong>
+      </div>
+      <p style="font-size:13px; color:var(--color-muted); margin-bottom:12px;">
+        <code style="font-family:var(--font-mono);font-size:12px;background:rgba(255,255,255,0.06);padding:1px 5px;border-radius:3px;">${json.deletedRelations ?? 0}</code>
+        relation(s) removed. The correctly-named junction
+        <code style="font-family:var(--font-mono);font-size:12px;background:rgba(255,255,255,0.06);padding:1px 5px;border-radius:3px;">${dev}</code>
+        now appears in Dev Only.
+      </p>
+      ${json.warnings?.length ? `<p style="font-size:12px;color:var(--color-warning);">⚠️ Warnings: ${json.warnings.join('; ')}</p>` : ''}
+      <a href="/diff/dev-only" class="btn" style="font-size:12px; padding:5px 12px;">Go to Dev Only →</a>
+    `;
+  } catch (err: unknown) {
+    proceedBtn.disabled = false;
+    proceedBtn.textContent = 'Delete from prod and fix';
+    confirmErr.textContent = err instanceof Error ? err.message : String(err);
+  }
+});
+</script>

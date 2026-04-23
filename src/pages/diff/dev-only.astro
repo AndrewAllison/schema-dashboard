@@ -1,0 +1,189 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { diff, counts, fetchedAt, error } = await getDiffData(Astro.url);
+const { collections, fields, relations } = diff;
+
+// Compute which collection names are still pending creation
+const pendingCollections = new Set<string>(collections.creates.map((c: any) => c.collection));
+
+// Group fields by collection
+const fieldsByCollection = new Map<string, any[]>();
+for (const f of fields.creates) {
+  const coll = f.collection as string;
+  if (!fieldsByCollection.has(coll)) fieldsByCollection.set(coll, []);
+  fieldsByCollection.get(coll)!.push(f);
+}
+
+const fieldRows: { coll: string; f: any; gated: boolean }[] = [];
+for (const [coll, items] of fieldsByCollection.entries()) {
+  for (const f of items) {
+    fieldRows.push({ coll, f, gated: pendingCollections.has(coll) });
+  }
+}
+
+const devOnlyCount = counts.devOnly;
+const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown';
+---
+<Layout title="Dev Only" active="/diff/dev-only" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>📥 In Dev Only</h1>
+      <div class="meta">{devOnlyCount} item(s) to add to prod · fetched {fetchedAtStr}</div>
+    </div>
+  </div>
+
+  {error && <div class="error-banner">⚠️ {error}</div>}
+
+  {devOnlyCount === 0 && <p class="empty">Nothing in dev only — schemas are in sync for this category.</p>}
+
+  <!-- Collections -->
+  {collections.creates.length > 0 && (
+    <div data-section-search>
+      <div class="section-header">
+        Collections ({collections.creates.length})
+        <span style="color: var(--color-muted); font-size: 12px; font-weight: 400; margin-left: 8px;">must be applied before fields</span>
+      </div>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="dev-search-collections">Search collections</label>
+        <input type="search" id="dev-search-collections" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+      <div class="bulk-actions">
+        <button class="btn" onclick="applyAll('.collection-apply-wrap', 'coll-progress')">
+          Apply all collections
+        </button>
+        <span id="coll-progress-counter" style="color: var(--color-muted); font-size: 12px;"></span>
+      </div>
+      <progress id="coll-progress" style="display:none; margin-bottom:12px;" max="0" value="0"></progress>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Collection</th><th>Action</th></tr></thead>
+          <tbody>
+            {collections.creates.map((c: any) => (
+              <tr data-search={`${c.collection}`.toLowerCase()}>
+                <td><code class="mono search-hl-target">{c.collection}</code></td>
+                <td>
+                  <div
+                    class="apply-wrap collection-apply-wrap"
+                    data-state="idle"
+                    data-action="create"
+                    data-entity="collection"
+                    data-item={JSON.stringify(c)}
+                    data-changes="[]"
+                  >
+                    <button class="apply-btn">Apply to prod</button>
+                    <div class="error-msg"></div>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+
+  <!-- Fields -->
+  {fields.creates.length > 0 && (
+    <div data-section-search style="margin-top: 32px;">
+      <div class="section-header">
+        Fields ({fields.creates.length})
+        <span style="color: var(--color-muted); font-size: 12px; font-weight: 400; margin-left: 8px;">fields on new collections are gated until parent is applied</span>
+      </div>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="dev-search-fields">Search fields</label>
+        <input type="search" id="dev-search-fields" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+      <div class="bulk-actions">
+        <button class="btn" onclick="applyAll('.field-apply-wrap:not([data-gated])', 'field-progress')">
+          Apply all unlocked fields
+        </button>
+        <span id="field-progress-counter" style="color: var(--color-muted); font-size: 12px;"></span>
+      </div>
+      <progress id="field-progress" style="display:none; margin-bottom:12px;" max="0" value="0"></progress>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Collection</th><th>Field</th><th>Type</th><th>Action</th></tr></thead>
+          <tbody>
+            {fieldRows.map(({ coll, f, gated }) => (
+              <tr data-search={`${coll} ${f.field} ${f.type ?? ''}`.toLowerCase()}>
+                <td><code class="mono search-hl-target">{coll}</code></td>
+                <td><code class="mono search-hl-target">{f.field}</code></td>
+                <td><span class="badge badge-options search-hl-target">{f.type ?? '?'}</span></td>
+                <td>
+                  {gated ? (
+                    <div class="apply-wrap field-apply-wrap" data-state="idle" data-gated="true" data-action="create" data-entity="field" data-collection={coll} data-item={JSON.stringify(f)} data-changes="[]">
+                      <button class="apply-btn" disabled title="Apply parent collection first">🔒 Collection pending</button>
+                      <div class="error-msg"></div>
+                    </div>
+                  ) : (
+                    <div class="apply-wrap field-apply-wrap" data-state="idle" data-action="create" data-entity="field" data-collection={coll} data-item={JSON.stringify(f)} data-changes="[]">
+                      <button class="apply-btn">Apply to prod</button>
+                      <div class="error-msg"></div>
+                    </div>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+
+  <!-- Relations -->
+  {relations.creates.length > 0 && (
+    <div data-section-search style="margin-top: 32px;">
+      <div class="section-header">Relations ({relations.creates.length})</div>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="dev-search-relations">Search relations</label>
+        <input type="search" id="dev-search-relations" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Collection</th><th>Field</th><th>Related</th><th>Action</th></tr></thead>
+          <tbody>
+            {relations.creates.map((r: any) => (
+              <tr data-search={`${r.collection} ${r.field} ${r.related_collection ?? ''}`.toLowerCase()}>
+                <td><code class="mono search-hl-target">{r.collection}</code></td>
+                <td><code class="mono search-hl-target">{r.field}</code></td>
+                <td><code class="mono search-hl-target">{r.related_collection ?? '—'}</code></td>
+                <td>
+                  <div class="apply-wrap" data-state="idle" data-action="create" data-entity="relation" data-item={JSON.stringify(r)} data-changes="[]">
+                    <button class="apply-btn">Apply to prod</button>
+                    <div class="error-msg"></div>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+</Layout>
+
+<script>
+// When a collection apply-wrap succeeds, unlock gated fields for that collection
+document.addEventListener('click', () => {
+  // Re-check after each click — unlock fields whose parent collection is now applied
+  const successCollections = new Set(
+    Array.from(document.querySelectorAll<HTMLElement>('.collection-apply-wrap[data-state="success"]'))
+      .map(w => JSON.parse(w.dataset.item ?? '{}').collection as string)
+  );
+  for (const wrap of document.querySelectorAll<HTMLElement>('.field-apply-wrap[data-gated]')) {
+    const coll = wrap.dataset.collection;
+    if (coll && successCollections.has(coll)) {
+      delete wrap.dataset.gated;
+      const btn = wrap.querySelector<HTMLButtonElement>('.apply-btn')!;
+      btn.disabled = false;
+      btn.title = '';
+      btn.textContent = 'Apply to prod';
+    }
+  }
+});
+</script>

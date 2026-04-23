@@ -1,0 +1,1032 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { counts, error: diffError } = await getDiffData(Astro.url);
+
+let graphData: { nodes: any[]; edges: any[]; fetchedAt?: number } = { nodes: [], edges: [] };
+let graphError: string | null = null;
+
+try {
+  const res = await fetch(new URL('/api/graph', Astro.url));
+  const json = await res.json();
+  if (json.error) {
+    graphError = json.error;
+  } else {
+    graphData = json;
+  }
+} catch (err) {
+  graphError = err instanceof Error ? err.message : String(err);
+}
+
+const nodeCount = graphData.nodes?.length ?? 0;
+const edgeCount = graphData.edges?.length ?? 0;
+const m2oCount = graphData.edges?.filter((e: any) => e.data?.type === 'm2o').length ?? 0;
+const m2mCount = graphData.edges?.filter((e: any) => e.data?.type === 'm2m').length ?? 0;
+const m2aCount = graphData.edges?.filter((e: any) => e.data?.type === 'm2a').length ?? 0;
+const junctionCount = graphData.nodes?.filter((n: any) => n.data?.isJunction).length ?? 0;
+const fetchedAtStr = graphData.fetchedAt ? new Date(graphData.fetchedAt).toLocaleString() : 'unknown';
+---
+
+<Layout title="Relationship Graph" active="/diff/graph" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>🕸️ Relationship Graph</h1>
+      <div class="meta">
+        {nodeCount} collections ({junctionCount} junction) · {m2oCount} M2O · {m2mCount} M2M · {m2aCount} M2A · fetched {fetchedAtStr}
+      </div>
+    </div>
+    <button class="btn" id="refresh-btn">↻ Refresh</button>
+  </div>
+
+  {graphError && <div class="error-banner">⚠️ {graphError}</div>}
+  {diffError && <div class="error-banner">⚠️ (sidebar counts) {diffError}</div>}
+
+  <!-- Toolbar -->
+  <div class="graph-toolbar">
+    <div class="toolbar-group">
+      <button class="btn view-btn active" id="view-graph">⬡ Graph</button>
+      <button class="btn view-btn" id="view-table">⊞ Table</button>
+    </div>
+    <div class="toolbar-sep"></div>
+
+    <div id="graph-only-controls">
+      <div class="toolbar-group">
+        <span class="toolbar-label">Layout</span>
+        <select id="layout-select" class="toolbar-select">
+          <option value="cose">Force Directed</option>
+          <option value="breadthfirst">Hierarchy</option>
+          <option value="concentric">Concentric</option>
+          <option value="circle">Circle</option>
+          <option value="grid">Grid</option>
+        </select>
+      </div>
+
+      <div class="toolbar-group">
+        <span class="toolbar-label">Show</span>
+        <label class="toolbar-check"><input type="checkbox" id="show-m2o" checked> <span class="edge-dot m2o-dot"></span>M2O</label>
+        <label class="toolbar-check"><input type="checkbox" id="show-m2m" checked> <span class="edge-dot m2m-dot"></span>M2M</label>
+        <label class="toolbar-check"><input type="checkbox" id="show-m2a" checked> <span class="edge-dot m2a-dot"></span>M2A</label>
+        <label class="toolbar-check"><input type="checkbox" id="show-junctions" checked> <span class="edge-dot junc-dot"></span>Junctions</label>
+      </div>
+
+      <div class="toolbar-group">
+        <button class="btn" id="fit-btn" title="Fit all">⊡ Fit</button>
+        <button class="btn" id="zoom-in-btn" title="Zoom in">+</button>
+        <button class="btn" id="zoom-out-btn" title="Zoom out">−</button>
+      </div>
+    </div>
+
+    <div class="toolbar-group" style="margin-left:auto;">
+      <input type="search" id="node-search" class="section-search-input" style="max-width:200px;" placeholder="Search collections…" autocomplete="off" />
+    </div>
+  </div>
+
+  <!-- Graph + info panel -->
+  <div class="graph-layout" id="graph-layout">
+    <div id="cy" class="cy-container"></div>
+    <div id="info-panel" class="info-panel" style="display:none;">
+      <div class="info-placeholder">Click a node to see details</div>
+    </div>
+  </div>
+
+  <!-- Table view -->
+  <div id="table-view" style="display:none;">
+    <div class="rel-table-wrap">
+      <table class="rel-table">
+        <thead>
+          <tr>
+            <th>Collection</th>
+            <th>M2O &rarr;</th>
+            <th>&larr; O2M</th>
+            <th>&#8596; M2M</th>
+            <th>M2A</th>
+            <th class="col-count" title="Total connections">#</th>
+          </tr>
+        </thead>
+        <tbody id="rel-tbody"></tbody>
+      </table>
+    </div>
+    <div id="table-empty" class="table-empty" style="display:none;">No collections match.</div>
+  </div>
+
+  <!-- Legend -->
+  <div class="graph-legend">
+    <span class="legend-title">Legend</span>
+    <span class="legend-item">
+      <span class="legend-node" style="border-color:#6366f1;"></span>Collection
+    </span>
+    <span class="legend-item">
+      <span class="legend-node" style="border-color:#f59e0b;width:14px;height:14px;"></span>Junction table
+    </span>
+    <span class="legend-sep"></span>
+    <span class="legend-item">
+      <span class="legend-line" style="background:#94a3b8;"></span>M2O (many-to-one)
+    </span>
+    <span class="legend-item">
+      <span class="legend-line" style="background:#6366f1;border-top:2px dashed #6366f1;background:none;display:inline-block;width:28px;height:2px;border-bottom:none;"></span>M2M (many-to-many)
+    </span>
+    <span class="legend-item">
+      <span class="legend-line" style="background:#22c55e;border-top:2px dotted #22c55e;background:none;display:inline-block;width:28px;height:2px;border-bottom:none;"></span>M2A (many-to-any)
+    </span>
+  </div>
+</Layout>
+
+<style>
+/* Override max-width for the graph page */
+:global(.main) {
+  max-width: none !important;
+}
+
+.graph-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.toolbar-select {
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toolbar-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.edge-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.m2o-dot { background: #94a3b8; }
+.m2m-dot { background: #6366f1; }
+.m2a-dot { background: #22c55e; }
+.junc-dot { background: #f59e0b; }
+
+.graph-layout {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.cy-container {
+  flex: 1;
+  height: 680px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: #080a10;
+  min-width: 0;
+}
+
+.info-panel {
+  width: 300px;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  padding: 16px;
+  max-height: 680px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.info-placeholder {
+  color: var(--color-muted);
+  font-style: italic;
+  text-align: center;
+  padding: 40px 0;
+}
+
+.info-header {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.info-degree {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-bottom: 14px;
+}
+
+.info-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
+  margin-top: 12px;
+}
+
+.info-conn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+
+.info-conn-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.info-conn-via {
+  font-size: 10px;
+  color: var(--color-muted);
+  padding-left: 2px;
+}
+
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.legend-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--color-muted);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text);
+}
+
+.legend-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border);
+}
+
+.legend-node {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: #1a1d27;
+  border: 2px solid;
+  flex-shrink: 0;
+}
+
+.legend-line {
+  display: inline-block;
+  width: 28px;
+  height: 2px;
+  flex-shrink: 0;
+}
+
+/* ── View toggle ─────────────────────────────────────────────────────────── */
+.toolbar-sep {
+  width: 1px;
+  height: 22px;
+  background: var(--color-border);
+  flex-shrink: 0;
+}
+
+#graph-only-controls {
+  display: contents; /* transparent flex wrapper — children are direct flex items */
+}
+
+.view-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.view-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+.view-btn.active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
+/* ── Relationship table ──────────────────────────────────────────────────── */
+.rel-table-wrap {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: auto;
+  margin-bottom: 12px;
+}
+
+.rel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.rel-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface);
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.rel-table th.col-count {
+  text-align: center;
+  width: 40px;
+}
+
+.rel-table td {
+  padding: 7px 12px;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.rel-table td.col-count {
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.rel-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.rel-row:hover {
+  background: rgba(255,255,255,0.03);
+}
+
+.rel-row.expanded {
+  border-left: 3px solid var(--color-accent);
+  background: rgba(99,102,241,0.06);
+}
+
+.rel-row td:first-child {
+  white-space: nowrap;
+}
+
+.rel-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge-junction {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: rgba(245,158,11,0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245,158,11,0.3);
+  flex-shrink: 0;
+}
+
+.rel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.rel-chip {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-m2o {
+  background: rgba(148,163,184,0.12);
+  color: #94a3b8;
+  border: 1px solid rgba(148,163,184,0.2);
+}
+
+.chip-m2m {
+  background: rgba(99,102,241,0.12);
+  color: #818cf8;
+  border: 1px solid rgba(99,102,241,0.25);
+}
+
+.chip-m2a {
+  background: rgba(34,197,94,0.10);
+  color: #4ade80;
+  border: 1px solid rgba(34,197,94,0.2);
+}
+
+.rel-empty-cell {
+  color: var(--color-muted);
+  opacity: 0.4;
+}
+
+/* Expanded detail row */
+.expand-row td {
+  background: rgba(0,0,0,0.25);
+  padding: 14px 16px;
+  font-family: inherit;
+}
+
+.expand-inner {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.expand-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
+}
+
+.expand-conn {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  margin-bottom: 3px;
+  font-size: 11px;
+}
+
+.expand-conn-main {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.expand-conn-via {
+  font-size: 10px;
+  color: var(--color-muted);
+  padding-left: 2px;
+}
+
+.table-empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--color-muted);
+  font-style: italic;
+  font-size: 13px;
+}
+</style>
+
+<!-- Cytoscape from CDN -->
+<script is:inline src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+
+<script is:inline define:vars={{ graphData }}>
+document.addEventListener('DOMContentLoaded', function () {
+  if (typeof cytoscape === 'undefined') {
+    document.getElementById('cy').textContent = 'Error: Cytoscape failed to load.';
+    return;
+  }
+
+  // ── Build Cytoscape instance ──────────────────────────────────────────────
+  const cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: [...(graphData.nodes || []), ...(graphData.edges || [])],
+    wheelSensitivity: 0.3,
+    boxSelectionEnabled: false,
+    style: [
+      // Nodes
+      {
+        selector: 'node',
+        style: {
+          'shape': 'round-rectangle',
+          'background-color': '#12151f',
+          'border-color': '#6366f1',
+          'border-width': 2,
+          'label': 'data(label)',
+          'color': '#e2e8f0',
+          'text-valign': 'bottom',
+          'text-halign': 'center',
+          'text-margin-y': 5,
+          'font-size': '10px',
+          'font-family': 'JetBrains Mono, Fira Code, monospace',
+          'width': 32,
+          'height': 32,
+          'text-wrap': 'ellipsis',
+          'text-max-width': '90px',
+          'min-zoomed-font-size': 6,
+        },
+      },
+      {
+        selector: 'node[?isJunction]',
+        style: {
+          'border-color': '#f59e0b',
+          'border-width': 1.5,
+          'width': 22,
+          'height': 22,
+          'font-size': '9px',
+          'opacity': 0.8,
+        },
+      },
+      {
+        selector: 'node.highlighted',
+        style: {
+          'border-width': 3,
+          'border-color': '#ffffff',
+          'z-index': 20,
+          'opacity': 1,
+        },
+      },
+      {
+        selector: 'node.faded',
+        style: { 'opacity': 0.15 },
+      },
+      // Edges
+      {
+        selector: 'edge',
+        style: {
+          'width': 1.5,
+          'line-color': '#2d3148',
+          'target-arrow-color': '#2d3148',
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'label': 'data(label)',
+          'font-size': '8px',
+          'color': '#64748b',
+          'text-background-opacity': 1,
+          'text-background-color': '#080a10',
+          'text-background-padding': '2px',
+          'text-border-opacity': 0.6,
+          'text-border-color': '#2d3148',
+          'text-border-width': 1,
+          'text-border-style': 'solid',
+          'min-zoomed-font-size': 6,
+        },
+      },
+      {
+        selector: 'edge[type="m2o"]',
+        style: {
+          'line-color': '#475569',
+          'target-arrow-color': '#475569',
+          'color': '#64748b',
+        },
+      },
+      {
+        selector: 'edge[type="m2m"]',
+        style: {
+          'line-color': '#6366f1',
+          'target-arrow-color': '#6366f1',
+          'source-arrow-color': '#6366f1',
+          'source-arrow-shape': 'triangle',
+          'line-style': 'dashed',
+          'color': '#818cf8',
+        },
+      },
+      {
+        selector: 'edge[type="m2a"]',
+        style: {
+          'line-color': '#22c55e',
+          'target-arrow-color': '#22c55e',
+          'line-style': 'dotted',
+          'color': '#4ade80',
+        },
+      },
+      {
+        selector: 'edge.faded',
+        style: { 'opacity': 0.05 },
+      },
+      {
+        selector: 'edge.highlighted',
+        style: { 'width': 2.5, 'z-index': 20, 'opacity': 1 },
+      },
+    ],
+    layout: {
+      name: 'cose',
+      padding: 50,
+      fit: true,
+      randomize: false,
+      nodeRepulsion: 800000,
+      idealEdgeLength: 120,
+      componentSpacing: 120,
+      animate: false,
+    },
+  });
+
+  // ── Layouts ───────────────────────────────────────────────────────────────
+  function runLayout(name) {
+    const base = { padding: 50, fit: true, animate: true, animationDuration: 400 };
+    const opts = Object.assign({}, base, {
+      cose: { name: 'cose', randomize: false, nodeRepulsion: 800000, idealEdgeLength: 120, componentSpacing: 120, animate: false },
+      breadthfirst: { name: 'breadthfirst', directed: true, spacingFactor: 1.75, avoidOverlap: true },
+      concentric: { name: 'concentric', concentric: n => n.degree(), levelWidth: () => 3, animate: true },
+      circle: { name: 'circle', animate: true },
+      grid: { name: 'grid', animate: true },
+    }[name] || { name });
+    cy.layout(opts).run();
+  }
+
+  document.getElementById('layout-select').addEventListener('change', function () {
+    runLayout(this.value);
+  });
+
+  // ── Zoom controls ─────────────────────────────────────────────────────────
+  document.getElementById('fit-btn').addEventListener('click', () => cy.fit(50));
+  document.getElementById('zoom-in-btn').addEventListener('click', () => cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }));
+  document.getElementById('zoom-out-btn').addEventListener('click', () => cy.zoom({ level: cy.zoom() * 0.77, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }));
+
+  // ── Edge / junction visibility toggles ───────────────────────────────────
+  function applyVisibility() {
+    const showM2O  = document.getElementById('show-m2o').checked;
+    const showM2M  = document.getElementById('show-m2m').checked;
+    const showM2A  = document.getElementById('show-m2a').checked;
+    const showJunc = document.getElementById('show-junctions').checked;
+
+    cy.edges('[type="m2o"]')[showM2O ? 'show' : 'hide']();
+    cy.edges('[type="m2m"]')[showM2M ? 'show' : 'hide']();
+    cy.edges('[type="m2a"]')[showM2A ? 'show' : 'hide']();
+    cy.nodes('[?isJunction]')[showJunc ? 'show' : 'hide']();
+  }
+
+  ['show-m2o', 'show-m2m', 'show-m2a', 'show-junctions'].forEach(id => {
+    document.getElementById(id).addEventListener('change', applyVisibility);
+  });
+
+  // ── Node search highlight (graph) / filter (table) ───────────────────────
+  document.getElementById('node-search').addEventListener('input', function () {
+    const q = this.value.trim().toLowerCase();
+    if (currentView === 'table') {
+      renderTable(q);
+      return;
+    }
+    cy.elements().removeClass('faded highlighted');
+    if (!q) return;
+    const matches = cy.nodes().filter(n =>
+      n.data('label').toLowerCase().includes(q) || n.data('fullName').toLowerCase().includes(q)
+    );
+    if (matches.length) {
+      cy.elements().addClass('faded');
+      matches.forEach(n => {
+        n.removeClass('faded').addClass('highlighted');
+        n.connectedEdges().removeClass('faded').addClass('highlighted');
+        n.neighborhood('node').removeClass('faded');
+      });
+    }
+  });
+
+  // ── Table view ────────────────────────────────────────────────────────────
+  // Build a per-node relationship index from graphData
+  function buildNodeRelMap() {
+    const map = {};
+    for (const n of graphData.nodes) {
+      map[n.data.id] = { m2oOut: [], m2oIn: [], m2m: [], m2a: [] };
+    }
+    for (const e of graphData.edges) {
+      const d = e.data;
+      if (d.type === 'm2o') {
+        if (map[d.source]) map[d.source].m2oOut.push(d);
+        if (map[d.target]) map[d.target].m2oIn.push(d);
+      } else if (d.type === 'm2m') {
+        if (map[d.source]) map[d.source].m2m.push({ ...d, other: d.target });
+        if (map[d.target]) map[d.target].m2m.push({ ...d, other: d.source });
+      } else if (d.type === 'm2a') {
+        if (map[d.source]) map[d.source].m2a.push(d);
+      }
+    }
+    return map;
+  }
+  const nodeRelMap = buildNodeRelMap();
+
+  function chipHtml(cls, text, title) {
+    return `<span class="rel-chip ${cls}" title="${title || text}">${text}</span>`;
+  }
+
+  function chipsCell(items) {
+    if (!items.length) return '<span class="rel-empty-cell">—</span>';
+    return `<div class="rel-chips">${items.join('')}</div>`;
+  }
+
+  function shortName(fullName) {
+    // Strip prefix for display (same logic as shortLabel in API)
+    const node = graphData.nodes.find(n => n.data.fullName === fullName || n.data.id === fullName);
+    return node ? node.data.label : fullName;
+  }
+
+  function renderExpandGroup(title, items, color, renderRow) {
+    if (!items.length) return '';
+    const rows = items.map(renderRow).join('');
+    return `
+      <div>
+        <div class="expand-section-label" style="color:${color};">${title} (${items.length})</div>
+        ${rows}
+      </div>`;
+  }
+
+  function renderExpandRow(conn, arrowHtml) {
+    return `
+      <div class="expand-conn">
+        <div class="expand-conn-main">
+          <code style="opacity:0.8;">${conn.field}</code>
+          <span style="color:var(--color-muted);">${arrowHtml}</span>
+          <code>${shortName(conn.other || conn.target || conn.source)}</code>
+        </div>
+        ${conn.via ? `<div class="expand-conn-via">via ${conn.via}</div>` : ''}
+      </div>`;
+  }
+
+  function renderTable(query) {
+    const tbody = document.getElementById('rel-tbody');
+    const emptyMsg = document.getElementById('table-empty');
+
+    // Sort: non-junction A-Z, then junction A-Z
+    const sorted = [...graphData.nodes].sort((a, b) => {
+      const aj = a.data.isJunction ? 1 : 0;
+      const bj = b.data.isJunction ? 1 : 0;
+      if (aj !== bj) return aj - bj;
+      return a.data.label.localeCompare(b.data.label);
+    });
+
+    const filtered = query
+      ? sorted.filter(n =>
+          n.data.label.toLowerCase().includes(query) ||
+          n.data.fullName.toLowerCase().includes(query)
+        )
+      : sorted;
+
+    if (!filtered.length) {
+      tbody.innerHTML = '';
+      emptyMsg.style.display = 'block';
+      return;
+    }
+    emptyMsg.style.display = 'none';
+
+    const rows = filtered.map(n => {
+      const d = n.data;
+      const rel = nodeRelMap[d.id] || { m2oOut: [], m2oIn: [], m2m: [], m2a: [] };
+      const total = rel.m2oOut.length + rel.m2oIn.length + rel.m2m.length + rel.m2a.length;
+
+      const m2oOutChips = rel.m2oOut.map(e =>
+        chipHtml('chip-m2o', `${e.field} → ${shortName(e.target)}`, `${e.field} → ${e.target}`)
+      );
+      const m2oInChips = rel.m2oIn.map(e =>
+        chipHtml('chip-m2o', `${shortName(e.source)}.${e.field}`, `${e.source}.${e.field}`)
+      );
+      const m2mChips = rel.m2m.map(e =>
+        chipHtml('chip-m2m', shortName(e.other), `${e.other}${e.via ? ' via ' + e.via : ''}`)
+      );
+      const m2aChips = rel.m2a.map(e =>
+        chipHtml('chip-m2a', shortName(e.target), e.target)
+      );
+
+      const junctionBadge = d.isJunction ? '<span class="badge-junction">junction</span>' : '';
+
+      return `<tr class="rel-row" data-id="${d.id}">
+        <td><div class="rel-name"><code>${d.label}</code>${junctionBadge}</div></td>
+        <td>${chipsCell(m2oOutChips)}</td>
+        <td>${chipsCell(m2oInChips)}</td>
+        <td>${chipsCell(m2mChips)}</td>
+        <td>${chipsCell(m2aChips)}</td>
+        <td class="col-count">${total || '<span style="opacity:.3">0</span>'}</td>
+      </tr>`;
+    });
+
+    tbody.innerHTML = rows.join('');
+
+    // Attach expand listeners
+    tbody.querySelectorAll('.rel-row').forEach(tr => {
+      tr.addEventListener('click', function () {
+        toggleExpandRow(this, this.dataset.id);
+      });
+    });
+  }
+
+  function toggleExpandRow(tr, nodeId) {
+    const existingExpand = tr.nextElementSibling;
+    if (existingExpand && existingExpand.classList.contains('expand-row')) {
+      existingExpand.remove();
+      tr.classList.remove('expanded');
+      return;
+    }
+
+    // Close any other open expand rows
+    document.querySelectorAll('.expand-row').forEach(r => r.remove());
+    document.querySelectorAll('.rel-row.expanded').forEach(r => r.classList.remove('expanded'));
+    tr.classList.add('expanded');
+
+    const rel = nodeRelMap[nodeId] || { m2oOut: [], m2oIn: [], m2m: [], m2a: [] };
+    const total = rel.m2oOut.length + rel.m2oIn.length + rel.m2m.length + rel.m2a.length;
+
+    const m2oOutGroup = renderExpandGroup(
+      'M2O — points to', rel.m2oOut, '#94a3b8',
+      e => renderExpandRow({ field: e.field, target: e.target, via: e.via, other: e.target }, '→')
+    );
+    const m2oInGroup = renderExpandGroup(
+      'O2M — referenced by', rel.m2oIn, '#94a3b8',
+      e => renderExpandRow({ field: e.field, source: e.source, other: e.source }, '←')
+    );
+    const m2mGroup = renderExpandGroup(
+      'M2M — many-to-many', rel.m2m, '#818cf8',
+      e => renderExpandRow({ field: e.field, other: e.other, via: e.via }, '↔')
+    );
+    const m2aGroup = renderExpandGroup(
+      'M2A — many-to-any', rel.m2a, '#4ade80',
+      e => renderExpandRow({ field: e.field, other: e.target, via: e.via }, '→')
+    );
+
+    const noConns = !total
+      ? '<div style="color:var(--color-muted);font-style:italic;font-size:12px;">No connections</div>'
+      : '';
+
+    const expandTr = document.createElement('tr');
+    expandTr.className = 'expand-row';
+    expandTr.innerHTML = `<td colspan="6">
+      <div class="expand-inner">
+        ${m2oOutGroup}${m2oInGroup}${m2mGroup}${m2aGroup}${noConns}
+      </div>
+    </td>`;
+    tr.after(expandTr);
+  }
+
+  // ── View switch ───────────────────────────────────────────────────────────
+  let currentView = 'graph';
+
+  function showGraphView() {
+    document.getElementById('graph-layout').style.display = 'flex';
+    document.getElementById('table-view').style.display = 'none';
+    document.querySelector('.graph-legend').style.display = 'flex';
+    document.getElementById('graph-only-controls').style.display = 'contents';
+    document.getElementById('view-graph').classList.add('active');
+    document.getElementById('view-table').classList.remove('active');
+    currentView = 'graph';
+  }
+
+  function showTableView() {
+    document.getElementById('graph-layout').style.display = 'none';
+    document.getElementById('table-view').style.display = 'block';
+    document.querySelector('.graph-legend').style.display = 'none';
+    document.getElementById('graph-only-controls').style.display = 'none';
+    document.getElementById('view-graph').classList.remove('active');
+    document.getElementById('view-table').classList.add('active');
+    currentView = 'table';
+    renderTable(document.getElementById('node-search').value.trim().toLowerCase());
+  }
+
+  document.getElementById('view-graph').addEventListener('click', showGraphView);
+  document.getElementById('view-table').addEventListener('click', showTableView);
+
+  // ── Info panel ────────────────────────────────────────────────────────────
+  const infoPanel = document.getElementById('info-panel');
+
+  function colorForType(type) {
+    return { m2o: '#94a3b8', m2m: '#818cf8', m2a: '#4ade80' }[type] || '#94a3b8';
+  }
+
+  function labelForType(type, direction) {
+    if (type === 'm2m') return 'M2M';
+    if (type === 'm2a') return 'M2A';
+    return direction === 'out' ? 'M2O →' : '← O2M';
+  }
+
+  function renderInfoPanel(node) {
+    const d = node.data();
+    const connectedEdges = node.connectedEdges(':visible');
+    const groups = { m2oOut: [], m2oIn: [], m2m: [], m2a: [] };
+
+    connectedEdges.forEach(edge => {
+      const isOut = edge.source().id() === d.id;
+      const type = edge.data('type');
+      const other = isOut ? edge.target() : edge.source();
+      const conn = {
+        type,
+        field: edge.data('field'),
+        via: edge.data('via'),
+        otherLabel: other.data('label'),
+        otherFull: other.data('fullName'),
+      };
+      if (type === 'm2m') groups.m2m.push(conn);
+      else if (type === 'm2a') groups.m2a.push(conn);
+      else if (isOut) groups.m2oOut.push(conn);
+      else groups.m2oIn.push(conn);
+    });
+
+    function renderGroup(title, items, type) {
+      if (!items.length) return '';
+      const color = colorForType(type);
+      const rows = items.map(c => `
+        <div class="info-conn">
+          <div class="info-conn-main">
+            <code style="font-size:10px;opacity:0.8;">${c.field}</code>
+            <span style="color:var(--color-muted);">→</span>
+            <code style="font-size:11px;">${c.otherLabel}</code>
+          </div>
+          ${c.via ? `<div class="info-conn-via">via ${c.via}</div>` : ''}
+        </div>
+      `).join('');
+      return `<div class="info-section-label" style="color:${color};">${title} (${items.length})</div>${rows}`;
+    }
+
+    infoPanel.innerHTML = `
+      <div class="info-header">
+        <code>${d.fullName}</code>
+        ${d.isJunction ? '<span class="badge badge-choices" style="font-size:10px;margin-left:6px;">junction</span>' : ''}
+      </div>
+      <div class="info-degree">${connectedEdges.length} connection(s)</div>
+      ${renderGroup('M2O — points to', groups.m2oOut, 'm2o')}
+      ${renderGroup('O2M — referenced by', groups.m2oIn, 'm2o')}
+      ${renderGroup('M2M — many-to-many', groups.m2m, 'm2m')}
+      ${renderGroup('M2A — many-to-any', groups.m2a, 'm2a')}
+      ${!connectedEdges.length ? '<div style="color:var(--color-muted);font-style:italic;font-size:12px;margin-top:8px;">No visible connections</div>' : ''}
+    `;
+    infoPanel.style.display = 'block';
+  }
+
+  cy.on('tap', 'node', function (evt) {
+    const node = evt.target;
+    cy.elements().removeClass('faded highlighted');
+    node.addClass('highlighted');
+    node.connectedEdges().addClass('highlighted');
+    node.neighborhood('node').forEach(n => n.addClass('highlighted'));
+    const others = cy.elements().not(node).not(node.connectedEdges()).not(node.neighborhood('node'));
+    others.addClass('faded');
+    renderInfoPanel(node);
+  });
+
+  cy.on('tap', function (evt) {
+    if (evt.target === cy) {
+      cy.elements().removeClass('faded highlighted');
+      infoPanel.style.display = 'none';
+      infoPanel.innerHTML = '<div class="info-placeholder">Click a node to see details</div>';
+    }
+  });
+
+  // ── Refresh button ────────────────────────────────────────────────────────
+  document.getElementById('refresh-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('refresh-btn');
+    btn.disabled = true;
+    btn.textContent = 'Refreshing…';
+    await fetch('/api/graph?forceRefresh=true').catch(() => {});
+    window.location.reload();
+  });
+});
+</script>

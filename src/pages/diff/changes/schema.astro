@@ -1,0 +1,17 @@
+---
+import Layout from '../../../components/Layout.astro';
+import ChangesPage from '../../../components/ChangesPage.astro';
+import { getDiffData } from '../../../lib/getDiffData';
+
+const { diff, counts, fetchedAt, error } = await getDiffData(Astro.url);
+---
+<Layout title="Schema Changes" active="/diff/changes/schema" counts={counts}>
+  <ChangesPage
+    title="🚨 Schema Changes"
+    tier="schema"
+    action="Requires field type / default update — review carefully before applying"
+    diff={diff}
+    fetchedAt={fetchedAt}
+    error={error}
+  />
+</Layout>

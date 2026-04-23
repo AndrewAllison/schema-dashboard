@@ -1,0 +1,274 @@
+---
+import Layout from '../../components/Layout.astro';
+const res = await fetch(new URL('/api/diff', Astro.url));
+const data = await res.json();
+
+const diff = data.diff ?? { collections: { creates: [], updates: [], deletes: [] }, fields: { creates: [], updates: [], deletes: [] }, relations: { creates: [], updates: [], deletes: [] } };
+const renames = data.renames ?? [];
+const matched = data.matched ?? { collections: [], fields: [], relations: [] };
+const junctionConflicts: any[] = data.junctionConflicts ?? [];
+const totals = data.totals ?? {
+  dev:  { collections: 0, fields: 0, relations: 0 },
+  prod: { collections: 0, fields: 0, relations: 0 },
+};
+
+const devOnlyCount  = diff.collections.creates.length + diff.fields.creates.length  + diff.relations.creates.length;
+const prodOnlyCount = diff.collections.deletes.length + diff.fields.deletes.length  + diff.relations.deletes.length;
+
+function countTier(tier: string) {
+  return [
+    ...diff.collections.updates,
+    ...diff.fields.updates,
+    ...diff.relations.updates,
+  ].flatMap((u: any) => u.changes).filter((c: any) => c.tier === tier).length;
+}
+
+const schemaCount    = countTier('schema');
+const relationsCount = countTier('relations');
+const choicesCount   = countTier('choices');
+const optionsCount   = countTier('options');
+const matchedCount           = (matched.collections ?? []).length;
+const junctionConflictsCount = junctionConflicts.filter((c: any) => !c.isAliased).length;
+
+// Per-entity sync status breakdown
+const syncRows = [
+  {
+    label: 'Collections',
+    devTotal:  totals.dev.collections,
+    prodTotal: totals.prod.collections,
+    matched:   matched.collections.length,
+    devOnly:   diff.collections.creates.length,
+    prodOnly:  diff.collections.deletes.length,
+    changed:   diff.collections.updates.length,
+  },
+  {
+    label: 'Fields',
+    devTotal:  totals.dev.fields,
+    prodTotal: totals.prod.fields,
+    matched:   matched.fields.length,
+    devOnly:   diff.fields.creates.length,
+    prodOnly:  diff.fields.deletes.length,
+    changed:   diff.fields.updates.length,
+  },
+  {
+    label: 'Relations',
+    devTotal:  totals.dev.relations,
+    prodTotal: totals.prod.relations,
+    matched:   matched.relations.length,
+    devOnly:   diff.relations.creates.length,
+    prodOnly:  diff.relations.deletes.length,
+    changed:   diff.relations.updates.length,
+  },
+];
+const fetchedAt = data.fetchedAt ? new Date(data.fetchedAt).toLocaleString() : 'unknown';
+const error = data.error;
+---
+<Layout title="Summary" active="/diff" counts={{ devOnly: devOnlyCount, prodOnly: prodOnlyCount, renames: renames.length, schema: schemaCount, relations: relationsCount, choices: choicesCount, options: optionsCount, matched: matchedCount, junctionConflicts: junctionConflictsCount }}>
+  <div class="banner">
+    <div>
+      <h1>Schema Diff Summary</h1>
+      <div class="meta">Last fetched: {fetchedAt}</div>
+    </div>
+    <button class="btn" id="refresh-btn">↻ Refresh</button>
+  </div>
+
+  {error && <div style="color: var(--color-error); margin-bottom: 20px; padding: 12px; background: rgba(239,68,68,0.1); border-radius: 6px; border: 1px solid rgba(239,68,68,0.3)">⚠️ {error}</div>}
+
+  <div class="summary-grid">
+    <a href="/diff/dev-only" style="text-decoration: none; color: inherit;">
+      <div class="stat-card" style={`border-color: ${devOnlyCount > 0 ? 'var(--color-create)' : 'var(--color-border)'}`}>
+        <div class="num" style="color: var(--color-create)">{devOnlyCount}</div>
+        <div class="label">📥 In Dev Only</div>
+      </div>
+    </a>
+    <a href="/diff/prod-only" style="text-decoration: none; color: inherit;">
+      <div class="stat-card">
+        <div class="num" style="color: var(--color-delete)">{prodOnlyCount}</div>
+        <div class="label">📤 In Prod Only</div>
+      </div>
+    </a>
+    <a href="/diff/renames" style="text-decoration: none; color: inherit;">
+      <div class="stat-card">
+        <div class="num" style="color: var(--color-warning)">{renames.length}</div>
+        <div class="label">🔍 Possible Renames</div>
+      </div>
+    </a>
+    <a href="/diff/changes/schema" style="text-decoration: none; color: inherit;">
+      <div class="stat-card">
+        <div class="num" style="color: var(--color-error)">{schemaCount}</div>
+        <div class="label">🚨 Schema Changes</div>
+      </div>
+    </a>
+    <a href="/diff/changes/relations" style="text-decoration: none; color: inherit;">
+      <div class="stat-card">
+        <div class="num" style="color: var(--color-accent)">{relationsCount}</div>
+        <div class="label">🔗 Relation Changes</div>
+      </div>
+    </a>
+    <a href="/diff/changes/choices" style="text-decoration: none; color: inherit;">
+      <div class="stat-card">
+        <div class="num" style="color: var(--color-warning)">{choicesCount}</div>
+        <div class="label">🎨 Choice Changes</div>
+      </div>
+    </a>
+    <a href="/diff/changes/options" style="text-decoration: none; color: inherit;">
+      <div class="stat-card">
+        <div class="num" style="color: var(--color-success)">{optionsCount}</div>
+        <div class="label">⚙️ Option Changes</div>
+      </div>
+    </a>
+    <a href="/diff/matched" style="text-decoration: none; color: inherit;">
+      <div class="stat-card" style={`border-color: ${matchedCount > 0 ? 'rgba(34,197,94,0.4)' : 'var(--color-border)'}`}>
+        <div class="num" style="color: var(--color-success)">{matchedCount}</div>
+        <div class="label">✅ Matched Collections</div>
+      </div>
+    </a>
+    <a href="/diff/junction-conflicts" style="text-decoration: none; color: inherit;">
+      <div class="stat-card" style={`border-color: ${junctionConflictsCount > 0 ? 'var(--color-warning)' : 'var(--color-border)'}`}>
+        <div class="num" style={`color: ${junctionConflictsCount > 0 ? 'var(--color-warning)' : 'var(--color-muted)'}`}>{junctionConflictsCount}</div>
+        <div class="label">⚡ Junction Conflicts</div>
+      </div>
+    </a>
+  </div>
+
+  <!-- ── Environment Overview ──────────────────────────────────────── -->
+  {totals.dev.collections > 0 && (
+    <div class="overview-wrap">
+      <div class="overview-section">
+        <div class="overview-heading">Environment Totals</div>
+        <table class="overview-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Dev</th>
+              <th>Prod</th>
+              <th>Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {syncRows.map(r => {
+              const delta = r.devTotal - r.prodTotal;
+              const deltaStr = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '—';
+              const deltaColor = delta > 0 ? 'var(--color-create)' : delta < 0 ? 'var(--color-delete)' : 'var(--color-muted)';
+              return (
+                <tr>
+                  <td class="row-label">{r.label}</td>
+                  <td class="num-cell">{r.devTotal}</td>
+                  <td class="num-cell">{r.prodTotal}</td>
+                  <td class="num-cell" style={`color: ${deltaColor}; font-weight: 600;`}>{deltaStr}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="overview-section">
+        <div class="overview-heading">Sync Status</div>
+        <table class="overview-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th style="color: var(--color-success);">✅ Matched</th>
+              <th style="color: var(--color-create);">📥 Dev Only</th>
+              <th style="color: var(--color-delete);">📤 Prod Only</th>
+              <th style="color: var(--color-update);">✏️ Changed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {syncRows.map(r => (
+              <tr>
+                <td class="row-label">{r.label}</td>
+                <td class="num-cell" style={`color: ${r.matched > 0 ? 'var(--color-success)' : 'var(--color-muted)'}`}>{r.matched}</td>
+                <td class="num-cell" style={`color: ${r.devOnly > 0 ? 'var(--color-create)' : 'var(--color-muted)'}`}>{r.devOnly}</td>
+                <td class="num-cell" style={`color: ${r.prodOnly > 0 ? 'var(--color-delete)' : 'var(--color-muted)'}`}>{r.prodOnly}</td>
+                <td class="num-cell" style={`color: ${r.changed > 0 ? 'var(--color-update)' : 'var(--color-muted)'}`}>{r.changed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+</Layout>
+
+<style>
+.overview-wrap {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 20px;
+  margin-top: 8px;
+}
+
+@media (max-width: 760px) {
+  .overview-wrap { grid-template-columns: 1fr; }
+}
+
+.overview-section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.overview-heading {
+  padding: 10px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(255,255,255,0.03);
+}
+
+.overview-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.overview-table th {
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: right;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.overview-table th:first-child { text-align: left; }
+
+.overview-table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(45,49,72,0.5);
+  font-size: 13px;
+}
+
+.overview-table tr:last-child td { border-bottom: none; }
+.overview-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+.row-label {
+  color: var(--color-text);
+  font-weight: 500;
+  white-space: nowrap;
+  min-width: 90px;
+}
+
+.num-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  padding-right: 20px;
+}
+</style>
+
+<script>
+document.getElementById('refresh-btn')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  await fetch('/api/refresh', { method: 'POST' });
+  location.reload();
+});
+</script>

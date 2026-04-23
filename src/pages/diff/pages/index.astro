@@ -1,0 +1,249 @@
+---
+import Layout from '../../../components/Layout.astro';
+import { getDiffData } from '../../../lib/getDiffData';
+
+const { counts, error: diffError } = await getDiffData(Astro.url);
+
+const res  = await fetch(new URL('/api/pages', Astro.url));
+const data = await res.json();
+
+interface PageCollection {
+  collection: string;
+  label: string;
+  totalItems: number;
+  statusBreakdown: Record<string, number>;
+  hasContent: boolean;
+  blockJunction: string | null;
+  allowedBlockTypes: string[];
+  error?: string;
+}
+
+const pageCollections: PageCollection[] = data.pageCollections ?? [];
+const totalPages       = (data.totalPages       as number) ?? 0;
+const totalPublished   = (data.totalPublished   as number) ?? 0;
+const emptyCollections = (data.emptyCollections as number) ?? 0;
+const fetchedAt        = data.fetchedAt ? new Date(data.fetchedAt as number).toLocaleString() : 'unknown';
+const error            = data.error as string | undefined;
+
+// All distinct status keys across all collections (for the legend)
+const allStatuses = [...new Set(
+  pageCollections.flatMap(c => Object.keys(c.statusBreakdown))
+)].sort();
+---
+<Layout title="Pages" active="/diff/pages" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>Pages Audit</h1>
+      <div class="meta">
+        {pageCollections.length} collection(s) · {totalPages} item(s) · fetched {fetchedAt}
+      </div>
+    </div>
+    <button class="btn" id="refresh-btn">↻ Refresh</button>
+  </div>
+
+  {(error || diffError) && (
+    <div class="error-banner">⚠️ {error ?? diffError}</div>
+  )}
+
+  <!-- Summary stat cards -->
+  <div class="stat-row">
+    <div class="stat-card">
+      <div class="num">{pageCollections.length}</div>
+      <div class="label">Collections</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-success)">{totalPublished}</div>
+      <div class="label">Published</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-warning)">{totalPages - totalPublished}</div>
+      <div class="label">Draft / Other</div>
+    </div>
+    <div class="stat-card" style={emptyCollections > 0 ? 'border-color: rgba(239,68,68,0.4)' : ''}>
+      <div class="num" style={`color: ${emptyCollections > 0 ? 'var(--color-error)' : 'var(--color-muted)'}`}>
+        {emptyCollections}
+      </div>
+      <div class="label">Empty Collections</div>
+    </div>
+  </div>
+
+  {emptyCollections > 0 && (
+    <div class="warning-info">
+      ⚠️ {emptyCollections} collection(s) have no content items — migration may be incomplete.
+    </div>
+  )}
+
+  {pageCollections.length === 0 && !error && (
+    <p class="empty">No page collections detected. Check that DIRECTUS_COLLECTION_PREFIX is set and the prod token has read access.</p>
+  )}
+
+  {pageCollections.length > 0 && (
+    <div data-section-search>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="pages-search">Search collections</label>
+        <input
+          type="search"
+          id="pages-search"
+          class="section-search-input"
+          placeholder="Fuzzy search collections…"
+          autocomplete="off"
+        />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Collection</th>
+              <th class="num-col">Items</th>
+              <th class="num-col">Published</th>
+              <th class="num-col">Draft</th>
+              <th class="num-col">Other</th>
+              <th>Block Types</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pageCollections.map((c) => {
+              const published = c.statusBreakdown['published'] ?? 0;
+              const draft     = c.statusBreakdown['draft']     ?? 0;
+              const other     = c.totalItems - published - draft;
+              const isEmpty   = c.totalItems === 0;
+              const allPub    = c.totalItems > 0 && published === c.totalItems;
+
+              return (
+                <tr
+                  data-search={`${c.collection} ${c.label}`.toLowerCase()}
+                  class={isEmpty ? 'row-empty' : ''}
+                >
+                  <td>
+                    <a href={`/diff/pages/${c.collection}`} class="coll-link">
+                      <span class="search-hl-target">{c.label}</span>
+                    </a>
+                    <div class="coll-name">{c.collection}</div>
+                    {c.error && <div class="coll-error">⚠️ {c.error}</div>}
+                  </td>
+                  <td class="num-col">
+                    <strong>{c.totalItems}</strong>
+                  </td>
+                  <td class="num-col">
+                    {published > 0
+                      ? <span class="chip chip-published">{published}</span>
+                      : <span class="muted">—</span>
+                    }
+                  </td>
+                  <td class="num-col">
+                    {draft > 0
+                      ? <span class="chip chip-draft">{draft}</span>
+                      : <span class="muted">—</span>
+                    }
+                  </td>
+                  <td class="num-col">
+                    {other > 0
+                      ? <span class="chip chip-other">{other}</span>
+                      : <span class="muted">—</span>
+                    }
+                  </td>
+                  <td>
+                    {c.allowedBlockTypes.length > 0 ? (
+                      <span class="chip chip-blocks" title={c.allowedBlockTypes.join(', ')}>
+                        {c.allowedBlockTypes.length} type{c.allowedBlockTypes.length !== 1 ? 's' : ''}
+                      </span>
+                    ) : (
+                      <span class="muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    {isEmpty
+                      ? <span class="chip chip-empty">Empty</span>
+                      : allPub
+                        ? <span class="chip chip-all-pub">All published</span>
+                        : <span class="chip chip-partial">Partial</span>
+                    }
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+</Layout>
+
+<style>
+/* Stat cards row */
+.stat-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 24px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  min-width: 96px;
+}
+
+.stat-card .num   { font-size: 26px; font-weight: 700; line-height: 1; }
+.stat-card .label { font-size: 11px; color: var(--color-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* Warning banner */
+.warning-info {
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: var(--color-delete);
+}
+
+/* Collection link + meta */
+.coll-link  { font-weight: 600; color: var(--color-accent); text-decoration: none; }
+.coll-link:hover { text-decoration: underline; }
+.coll-name  { font-family: var(--font-mono); font-size: 11px; color: var(--color-muted); margin-top: 2px; }
+.coll-error { font-size: 11px; color: var(--color-error); margin-top: 2px; }
+
+/* Empty rows */
+.row-empty td { opacity: 0.55; }
+
+/* Numeric columns */
+.num-col { text-align: center; }
+
+/* Status chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.chip-published { background: rgba(34,197,94,0.15);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.3); }
+.chip-draft     { background: rgba(251,191,36,0.15);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.3); }
+.chip-other     { background: rgba(99,102,241,0.15);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.3); }
+.chip-blocks    { background: rgba(16,185,129,0.15);  color: #6ee7b7;              border: 1px solid rgba(16,185,129,0.3); cursor: default; }
+.chip-empty     { background: rgba(239,68,68,0.15);   color: var(--color-error);   border: 1px solid rgba(239,68,68,0.3); }
+.chip-all-pub   { background: rgba(34,197,94,0.12);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.25); }
+.chip-partial   { background: rgba(251,191,36,0.12);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.25); }
+
+.muted { color: var(--color-muted); font-size: 12px; }
+</style>
+
+<script>
+document.getElementById('refresh-btn')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  await fetch('/api/pages?refresh=true');
+  location.reload();
+});
+</script>

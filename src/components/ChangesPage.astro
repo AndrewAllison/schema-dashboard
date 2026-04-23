@@ -1,0 +1,164 @@
+---
+/**
+ * Generic changes page for a single diff tier (schema / relations / choices / options).
+ * Each parent item gets a section; each changed path gets a row with an Apply button.
+ */
+interface Props {
+  title: string;
+  tier: string;
+  action: string;
+  diff: any;
+  fetchedAt?: number;
+  error?: string;
+}
+
+const { title, tier, action, diff, fetchedAt, error } = Astro.props;
+const { collections, fields, relations } = diff;
+
+type Change = { path: string; tier: string; lhs: unknown; rhs: unknown };
+type UpdateEntry = { name: string; kind: 'Collection' | 'Field' | 'Relation'; item: any; changes: Change[] };
+
+const allUpdates: UpdateEntry[] = [
+  ...collections.updates.map((u: any) => ({
+    name: u.item.collection,
+    kind: 'Collection' as const,
+    item: u.item,
+    changes: u.changes.filter((c: Change) => c.tier === tier),
+  })),
+  ...fields.updates.map((u: any) => ({
+    name: `${u.item.collection}.${u.item.field}`,
+    kind: 'Field' as const,
+    item: u.item,
+    changes: u.changes.filter((c: Change) => c.tier === tier),
+  })),
+  ...relations.updates.map((u: any) => ({
+    name: `${u.item.collection}.${u.item.field}`,
+    kind: 'Relation' as const,
+    item: u.item,
+    changes: u.changes.filter((c: Change) => c.tier === tier),
+  })),
+].filter(u => u.changes.length > 0);
+
+const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown';
+
+function entityKind(kind: string): 'collection' | 'field' | 'relation' {
+  if (kind === 'Collection') return 'collection';
+  if (kind === 'Field') return 'field';
+  return 'relation';
+}
+
+function isArrayValue(v: unknown): v is unknown[] {
+  return Array.isArray(v);
+}
+
+function arrayDiff(lhs: unknown, rhs: unknown) {
+  const toKey = (v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? ((v as any).value ?? (v as any).text ?? JSON.stringify(v))
+      : String(v);
+  const l = isArrayValue(lhs) ? lhs.map(toKey) : [];
+  const r = isArrayValue(rhs) ? rhs.map(toKey) : [];
+  return {
+    toAdd:    l.filter(k => !r.includes(k)),
+    toRemove: r.filter(k => !l.includes(k)),
+  };
+}
+
+function summarise(v: unknown): string {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v === 'string') return `"${v}"`;
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '[]';
+    if (typeof v[0] === 'object') return `[${v.length} items]`;
+    return JSON.stringify(v).slice(0, 80);
+  }
+  const s = JSON.stringify(v);
+  return s.length > 80 ? s.slice(0, 77) + '...' : s;
+}
+---
+
+<div class="banner">
+  <div>
+    <h1>{title}</h1>
+    <div class="meta">{allUpdates.length} item(s) with changes · fetched {fetchedAtStr}</div>
+  </div>
+</div>
+
+{error && <div class="error-banner">⚠️ {error}</div>}
+
+<div style="background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2); border-radius: 6px; padding: 10px 14px; margin-bottom: 24px; font-size: 13px; color: var(--color-muted);">
+  <strong style="color: var(--color-text);">Action:</strong> {action}
+</div>
+
+{allUpdates.length === 0 && <p class="empty">No changes in this category.</p>}
+
+{allUpdates.map((u, sectionIdx) => (
+  <div data-section-search style="margin-bottom: 32px;">
+    <div class="section-header" style="display: flex; align-items: center; gap: 10px;">
+      <code class="mono search-hl-target" style="font-size: 14px;">{u.name}</code>
+      <span class="badge badge-options" style="font-size: 10px;">{u.kind}</span>
+    </div>
+    <div class="section-search-bar">
+      <label class="visually-hidden" for={`chg-search-${sectionIdx}`}>Filter rows in this section</label>
+      <input
+        type="search"
+        id={`chg-search-${sectionIdx}`}
+        class="section-search-input"
+        placeholder="Fuzzy search (path & name, space = AND)…"
+        autocomplete="off"
+      />
+      <span class="section-search-count" aria-live="polite"></span>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 200px;">Path</th>
+            <th>Prod (current)</th>
+            <th>Dev (target)</th>
+            <th style="width: 120px;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {u.changes.map((ch: Change) => {
+            const isArr = isArrayValue(ch.lhs) || isArrayValue(ch.rhs);
+            const ad = isArr ? arrayDiff(ch.lhs, ch.rhs) : null;
+            return (
+              <tr data-search={`${u.name} ${ch.path}`.toLowerCase()}>
+                <td><code class="mono search-hl-target">{ch.path}</code></td>
+                <td class="diff-value">
+                  {isArr && ad ? (
+                    <div>
+                      {ad.toAdd.map(v    => <div class="diff-add">+{v}</div>)}
+                      {ad.toRemove.map(v => <div class="diff-del">-{v}</div>)}
+                    </div>
+                  ) : (
+                    <span class="diff-del">{summarise(ch.rhs)}</span>
+                  )}
+                </td>
+                <td class="diff-value">
+                  {isArr ? null : <span class="diff-add">{summarise(ch.lhs)}</span>}
+                </td>
+                <td>
+                  <div
+                    class="apply-wrap"
+                    data-state="idle"
+                    data-action="update"
+                    data-entity={entityKind(u.kind)}
+                    data-item={JSON.stringify(u.item)}
+                    data-changes={JSON.stringify(u.changes)}
+                    data-collection={u.item.collection}
+                  >
+                    <button class="apply-btn">Apply to prod</button>
+                    <div class="error-msg"></div>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  </div>
+))}

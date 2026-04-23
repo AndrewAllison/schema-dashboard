@@ -1,0 +1,590 @@
+---
+import Layout from '../../../../components/Layout.astro';
+import { getDiffData } from '../../../../lib/getDiffData';
+
+const { collection } = Astro.params as { collection: string };
+const { counts }     = await getDiffData(Astro.url);
+
+const apiUrl = new URL('/api/page-relations', Astro.url);
+apiUrl.searchParams.set('collection', collection);
+
+const res  = await fetch(apiUrl);
+const data = await res.json();
+
+interface RelationDetail {
+  fieldName: string;
+  junctionCollection: string;
+  junctionFk: string;
+  isM2A: boolean;
+  allowedCollections: string[];
+  relatedCollection: string | null;
+  countsByPageId: Record<string, { total: number; byType: Record<string, number> }>;
+  error?: string;
+}
+
+interface PageItem {
+  id: number | string;
+  title: string;
+  status: string;
+  slug: string | null;
+}
+
+const label: string     = data.label ?? collection;
+const items: PageItem[] = data.items ?? [];
+const relations: RelationDetail[] = data.relations ?? [];
+const fetchedAt = data.fetchedAt ? new Date(data.fetchedAt as number).toLocaleString() : 'unknown';
+const error = data.error as string | undefined;
+
+// Per-relation coverage stats (% of page items that have at least 1 related item)
+interface CoverageStats {
+  populated: number;
+  total: number;
+  pct: number;
+  totalItems: number;
+}
+const coverageByRelation = new Map<string, CoverageStats>();
+for (const rel of relations) {
+  const populated = items.filter(item => (rel.countsByPageId[String(item.id)]?.total ?? 0) > 0).length;
+  const totalRelItems = Object.values(rel.countsByPageId).reduce((s, v) => s + v.total, 0);
+  coverageByRelation.set(rel.fieldName, {
+    populated,
+    total: items.length,
+    pct: items.length > 0 ? Math.round((populated / items.length) * 100) : 0,
+    totalItems: totalRelItems,
+  });
+}
+
+// Shorten a collection name for compact display inside table cells
+function shortTypeName(type: string): string {
+  const prefix = data.collection as string;
+  // Strip the common collection prefix to keep labels concise
+  return type.replace(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_?`), '') || type;
+}
+
+// Sort items: published first, then draft, then others
+const statusOrder = ['published', 'draft', 'review', 'archived', 'unknown'];
+const sortedItems = [...items].sort((a, b) => {
+  const ai = statusOrder.indexOf(a.status) === -1 ? 99 : statusOrder.indexOf(a.status);
+  const bi = statusOrder.indexOf(b.status) === -1 ? 99 : statusOrder.indexOf(b.status);
+  return ai - bi;
+});
+---
+<Layout title={`Pages — ${label} — Relations`} active="/diff/pages" counts={counts}>
+  <div class="banner">
+    <div>
+      <div class="breadcrumb">
+        <a href="/diff/pages">Pages</a>
+        <span class="sep">›</span>
+        <a href={`/diff/pages/${collection}`}>{label}</a>
+        <span class="sep">›</span>
+        <span>M2M Relations</span>
+      </div>
+      <h1>{label} — M2M Relations</h1>
+      <div class="meta">
+        {items.length} item(s) · {relations.length} relation(s) · fetched {fetchedAt}
+      </div>
+    </div>
+    <button class="btn" id="refresh-btn">↻ Refresh</button>
+  </div>
+
+  {error && <div class="error-banner">⚠️ {error}</div>}
+
+  {relations.length === 0 && !error && (
+    <div class="info-box">
+      No many-to-many relations found for <code class="mono">{collection}</code>.
+      This collection may only use direct fields or M2O relations.
+    </div>
+  )}
+
+  {items.length === 0 && relations.length > 0 && (
+    <div class="info-box">
+      No page items found — relation usage cannot be shown without content.
+    </div>
+  )}
+
+  {relations.length > 0 && (
+    <>
+      <!-- Coverage summary cards -->
+      <div class="coverage-row">
+        {relations.map(rel => {
+          const cov = coverageByRelation.get(rel.fieldName)!;
+          const pctColor = cov.pct === 100
+            ? 'var(--color-success)'
+            : cov.pct >= 50
+              ? 'var(--color-warning)'
+              : 'var(--color-error)';
+          return (
+            <div class="coverage-card">
+              <div class="cov-field">
+                {rel.fieldName}
+                {rel.isM2A && <span class="badge-m2a">M2A</span>}
+                {!rel.isM2A && rel.relatedCollection && (
+                  <span class="badge-m2m">M2M</span>
+                )}
+              </div>
+              <div class="cov-junction">{rel.junctionCollection}</div>
+              <div class="cov-stats">
+                <span class="cov-pct" style={`color: ${pctColor}`}>{cov.pct}%</span>
+                <span class="cov-detail">
+                  {cov.populated}/{cov.total} pages
+                </span>
+              </div>
+              <div class="cov-total">
+                {cov.totalItems} total item{cov.totalItems !== 1 ? 's' : ''}
+              </div>
+              {rel.error && <div class="cov-error">⚠️ {rel.error}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <!-- Matrix table -->
+      {items.length > 0 && (
+        <div class="matrix-wrap">
+          <div class="section-header" style="margin-bottom: 0;">
+            Usage Matrix
+            <span style="font-size: 12px; font-weight: 400; color: var(--color-muted); margin-left: 10px;">
+              — each cell shows related item count
+            </span>
+          </div>
+          <div class="table-outer">
+            <table class="matrix-table">
+              <thead>
+                <tr>
+                  <!-- Sticky page column -->
+                  <th class="col-page">Page</th>
+                  <th class="col-status">Status</th>
+                  {relations.map(rel => (
+                    <th class="col-rel" title={rel.junctionCollection}>
+                      <div class="rel-header-name">{rel.fieldName}</div>
+                      <div class="rel-header-type">
+                        {rel.isM2A ? 'M2A' : rel.relatedCollection ?? 'M2M'}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+                <!-- Coverage row -->
+                <tr class="coverage-header-row">
+                  <td class="col-page" style="font-size: 11px; color: var(--color-muted); font-style: italic;">
+                    Coverage →
+                  </td>
+                  <td class="col-status"></td>
+                  {relations.map(rel => {
+                    const cov = coverageByRelation.get(rel.fieldName)!;
+                    const pctColor = cov.pct === 100
+                      ? 'var(--color-success)'
+                      : cov.pct >= 50
+                        ? 'var(--color-warning)'
+                        : 'var(--color-error)';
+                    return (
+                      <td class="col-rel" style="text-align: center;">
+                        <span style={`font-size: 12px; font-weight: 700; color: ${pctColor}`}>
+                          {cov.pct}%
+                        </span>
+                        <div style="font-size: 10px; color: var(--color-muted);">
+                          {cov.totalItems} items
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedItems.map(item => {
+                  const pageId = String(item.id);
+                  return (
+                    <tr>
+                      <td class="col-page">
+                        <div class="page-title">{item.title}</div>
+                        <div class="page-meta">
+                          <code class="mono">#{item.id}</code>
+                          {item.slug && (
+                            <code class="mono" style="color: var(--color-muted); margin-left: 4px;">{item.slug}</code>
+                          )}
+                        </div>
+                      </td>
+                      <td class="col-status">
+                        <span class={`chip chip-${item.status}`}>{item.status}</span>
+                      </td>
+                      {relations.map(rel => {
+                        const counts = rel.countsByPageId[pageId];
+                        const total  = counts?.total ?? 0;
+                        const isEmpty = total === 0;
+                        return (
+                          <td class={`col-rel cell-count ${isEmpty ? 'cell-empty' : 'cell-filled'}`}>
+                            {isEmpty ? (
+                              <span class="count-zero">—</span>
+                            ) : (
+                              <div class="count-wrap">
+                                <span class="count-num">{total}</span>
+                                {rel.isM2A && counts?.byType && Object.keys(counts.byType).length > 0 && (
+                                  <div class="type-breakdown">
+                                    {Object.entries(counts.byType)
+                                      .sort(([, a], [, b]) => b - a)
+                                      .map(([type, n]) => (
+                                        <span class="type-pill" title={type}>
+                                          {shortTypeName(type)}<span class="type-n">×{n}</span>
+                                        </span>
+                                      ))
+                                    }
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <!-- Per-relation detail: allowed types for M2A -->
+      {relations.filter(r => r.isM2A && r.allowedCollections.length > 0).map(rel => (
+        <div class="rel-detail-card">
+          <div class="rel-detail-header">
+            <strong>{rel.fieldName}</strong>
+            <span class="badge-m2a" style="margin-left: 8px;">M2A</span>
+            <span style="color: var(--color-muted); font-size: 12px; margin-left: 8px;">
+              via <code class="mono">{rel.junctionCollection}</code>
+            </span>
+          </div>
+          <div class="rel-detail-types">
+            <span style="font-size: 12px; color: var(--color-muted); margin-right: 8px;">
+              Allowed types:
+            </span>
+            {rel.allowedCollections.map(t => <code class="mono">{t}</code>)}
+          </div>
+          {/* Which types are actually used across all pages */}
+          {(() => {
+            const usedTypes = new Map<string, number>();
+            for (const counts of Object.values(rel.countsByPageId)) {
+              for (const [type, n] of Object.entries(counts.byType ?? {})) {
+                usedTypes.set(type, (usedTypes.get(type) ?? 0) + n);
+              }
+            }
+            const usedEntries = [...usedTypes.entries()].sort(([, a], [, b]) => b - a);
+            if (usedEntries.length === 0) return null;
+            return (
+              <div class="rel-detail-used">
+                <span style="font-size: 12px; color: var(--color-muted); margin-right: 8px;">
+                  Used:
+                </span>
+                {usedEntries.map(([type, n]) => (
+                  <span class="used-type-pill">
+                    <code class="mono">{type}</code>
+                    <span class="used-type-count">{n}</span>
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      ))}
+    </>
+  )}
+</Layout>
+
+<script>
+document.getElementById('refresh-btn')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  // URL pattern: /diff/pages/{collection}/relations  — collection is at index -2
+  const collectionName = window.location.pathname.split('/').at(-2) ?? '';
+  await fetch(`/api/page-relations?collection=${encodeURIComponent(collectionName)}&refresh=true`);
+  location.reload();
+});
+</script>
+
+<style>
+/* Breadcrumb */
+.breadcrumb {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-bottom: 4px;
+}
+.breadcrumb a { color: var(--color-accent); }
+.breadcrumb .sep { margin: 0 6px; }
+
+/* Info box */
+.info-box {
+  background: rgba(99,102,241,0.08);
+  border: 1px solid rgba(99,102,241,0.25);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--color-muted);
+  margin-bottom: 24px;
+}
+
+/* Coverage summary cards */
+.coverage-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
+}
+
+.coverage-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  background: var(--color-surface);
+  min-width: 160px;
+  flex: 1;
+  max-width: 240px;
+}
+
+.cov-field {
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.cov-junction {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-muted);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cov-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cov-pct    { font-size: 22px; font-weight: 700; line-height: 1; }
+.cov-detail { font-size: 11px; color: var(--color-muted); }
+.cov-total  { font-size: 11px; color: var(--color-muted); margin-top: 2px; }
+.cov-error  { font-size: 11px; color: var(--color-error); margin-top: 4px; }
+
+/* Type badges on coverage cards */
+.badge-m2a {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(99,102,241,0.2);
+  color: #a5b4fc;
+  border: 1px solid rgba(99,102,241,0.35);
+}
+.badge-m2m {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(16,185,129,0.2);
+  color: #6ee7b7;
+  border: 1px solid rgba(16,185,129,0.35);
+}
+
+/* Matrix table */
+.matrix-wrap { margin-top: 28px; }
+
+.table-outer {
+  overflow-x: auto;
+  margin-top: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.matrix-table th {
+  background: var(--color-surface);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.col-page {
+  min-width: 220px;
+  max-width: 280px;
+  padding: 10px 14px;
+  text-align: left;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+}
+
+/* Sticky header cell for page column needs both top and left */
+thead .col-page { z-index: 4; }
+
+.col-status {
+  width: 100px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.col-rel {
+  min-width: 130px;
+  padding: 10px 12px;
+  text-align: center;
+  border-left: 1px solid rgba(45,49,72,0.5);
+}
+
+/* Coverage sub-header row */
+.coverage-header-row td {
+  background: rgba(45,49,72,0.3);
+  padding: 6px 12px;
+  border-bottom: 2px solid var(--color-border);
+}
+.coverage-header-row .col-page {
+  background: rgba(30,33,48,0.9);
+}
+
+/* Relation column headers */
+.rel-header-name {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--color-text);
+}
+.rel-header-type {
+  font-size: 10px;
+  color: var(--color-muted);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+
+/* Page cell */
+.page-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.page-meta {
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+/* Count cells */
+.cell-count {
+  vertical-align: middle !important;
+  border-bottom: 1px solid rgba(45,49,72,0.6);
+}
+.cell-empty  { background: rgba(239,68,68,0.04); }
+.cell-filled { background: rgba(34,197,94,0.04); }
+
+.count-zero {
+  color: rgba(148,163,184,0.4);
+  font-size: 18px;
+}
+
+.count-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.count-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-success);
+  line-height: 1;
+}
+
+/* M2A type breakdown pills */
+.type-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+  max-width: 180px;
+}
+
+.type-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  background: rgba(99,102,241,0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99,102,241,0.25);
+  white-space: nowrap;
+}
+.type-n {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+/* Status chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.chip-published { background: rgba(34,197,94,0.15);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.3); }
+.chip-draft     { background: rgba(251,191,36,0.15);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.3); }
+.chip-review    { background: rgba(99,102,241,0.15);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.3); }
+.chip-archived  { background: rgba(148,163,184,0.15); color: var(--color-muted);   border: 1px solid rgba(148,163,184,0.3); }
+.chip-unknown   { background: rgba(148,163,184,0.1);  color: var(--color-muted);   border: 1px solid var(--color-border); }
+
+/* Relation detail cards (M2A block type usage) */
+.rel-detail-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-top: 16px;
+  background: var(--color-surface);
+}
+.rel-detail-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.rel-detail-types {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.rel-detail-used {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.used-type-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(34,197,94,0.1);
+  border: 1px solid rgba(34,197,94,0.25);
+}
+.used-type-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-success);
+}
+</style>
+

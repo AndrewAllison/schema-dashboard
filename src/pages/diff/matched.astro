@@ -1,0 +1,192 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { matched, counts, fetchedAt, error } = await getDiffData(Astro.url);
+const { collections, fields, relations } = matched;
+
+// Index fields and relations by collection for grouped view
+const fieldsByCollection = new Map<string, any[]>();
+for (const f of fields) {
+  if (!fieldsByCollection.has(f.collection)) fieldsByCollection.set(f.collection, []);
+  fieldsByCollection.get(f.collection)!.push(f);
+}
+
+const relationsByCollection = new Map<string, any[]>();
+for (const r of relations) {
+  if (!relationsByCollection.has(r.collection)) relationsByCollection.set(r.collection, []);
+  relationsByCollection.get(r.collection)!.push(r);
+}
+
+// Build a sorted list of all collection names that appear in any matched entity
+const allCollectionNames = new Set<string>([
+  ...collections.map((c: any) => c.collection as string),
+  ...fields.map((f: any) => f.collection as string),
+  ...relations.map((r: any) => r.collection as string),
+]);
+const sortedCollectionNames = [...allCollectionNames].sort();
+
+const totalCount = collections.length + fields.length + relations.length;
+const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown';
+---
+<Layout title="Matched" active="/diff/matched" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>✅ Matched — In Sync</h1>
+      <div class="meta">
+        {collections.length} collection(s) · {fields.length} field(s) · {relations.length} relation(s) · fetched {fetchedAtStr}
+      </div>
+    </div>
+  </div>
+
+  {error && <div class="error-banner">⚠️ {error}</div>}
+
+  <div style="background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.25); border-radius: 6px; padding: 12px 16px; margin-bottom: 24px; font-size: 13px; color: var(--color-success);">
+    These collections, fields, and relations exist in both dev and prod with identical configuration.
+    No action required.
+  </div>
+
+  {totalCount === 0 && <p class="empty">No matched items found — nothing is fully in sync yet.</p>}
+
+  <!-- Collections overview table -->
+  {collections.length > 0 && (
+    <div data-section-search>
+      <div class="section-header">Collections ({collections.length})</div>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="matched-search-collections">Search collections</label>
+        <input type="search" id="matched-search-collections" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Collection</th>
+              <th>Fields (matched)</th>
+              <th>Relations (matched)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {collections.map((c: any) => {
+              const collFields    = fieldsByCollection.get(c.collection) ?? [];
+              const collRelations = relationsByCollection.get(c.collection) ?? [];
+              return (
+                <tr data-search={`${c.collection}`.toLowerCase()}>
+                  <td><code class="mono search-hl-target">{c.collection}</code></td>
+                  <td>
+                    <span class="badge badge-options">{collFields.length}</span>
+                  </td>
+                  <td>
+                    <span class="badge badge-options">{collRelations.length}</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+
+  <!-- Per-collection detail: fields + relations -->
+  {sortedCollectionNames.length > 0 && (
+    <div style="margin-top: 40px;">
+      <div class="section-header" style="margin-bottom: 0;">Collection Detail</div>
+      <div class="section-search-bar" style="margin-top: 8px;">
+        <label class="visually-hidden" for="matched-search-detail">Search detail</label>
+        <input type="search" id="matched-search-detail" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+
+      {sortedCollectionNames.map((collName) => {
+        const collFields    = fieldsByCollection.get(collName) ?? [];
+        const collRelations = relationsByCollection.get(collName) ?? [];
+        const isMatchedCollection = collections.some((c: any) => c.collection === collName);
+        return (
+          <div class="collection-group" data-section-search style="margin-top: 24px;">
+            <div class="collection-group-header">
+              <code class="mono">{collName}</code>
+              {isMatchedCollection
+                ? <span class="badge badge-success" style="margin-left: 8px; font-size: 11px;">collection matched</span>
+                : <span class="badge badge-options" style="margin-left: 8px; font-size: 11px;">fields/relations only</span>
+              }
+            </div>
+
+            {collFields.length > 0 && (
+              <div class="table-wrap" style="margin-top: 8px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width: 32px; color: var(--color-muted); font-weight: 400;">↳</th>
+                      <th>Field</th>
+                      <th>Type</th>
+                      <th>Interface</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {collFields.map((f: any) => (
+                      <tr data-search={`${collName} ${f.field} ${f.type ?? ''} ${f.meta?.interface ?? ''}`.toLowerCase()}>
+                        <td style="color: var(--color-muted); font-size: 12px;">field</td>
+                        <td><code class="mono search-hl-target">{f.field}</code></td>
+                        <td><span class="badge badge-options search-hl-target">{f.type ?? '?'}</span></td>
+                        <td><span class="search-hl-target" style="color: var(--color-muted); font-size: 12px;">{f.meta?.interface ?? '—'}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {collRelations.length > 0 && (
+              <div class="table-wrap" style="margin-top: 8px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width: 32px; color: var(--color-muted); font-weight: 400;">↳</th>
+                      <th>Field</th>
+                      <th>Related Collection</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {collRelations.map((r: any) => (
+                      <tr data-search={`${collName} ${r.field} ${r.related_collection ?? ''}`.toLowerCase()}>
+                        <td style="color: var(--color-muted); font-size: 12px;">relation</td>
+                        <td><code class="mono search-hl-target">{r.field}</code></td>
+                        <td><code class="mono search-hl-target">{r.related_collection ?? '—'}</code></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  )}
+</Layout>
+
+<style>
+.collection-group {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px 16px 4px;
+  background: var(--color-surface);
+}
+
+.collection-group-header {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.badge-success {
+  background: rgba(34,197,94,0.15);
+  color: var(--color-success);
+  border: 1px solid rgba(34,197,94,0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+</style>

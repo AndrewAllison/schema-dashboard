@@ -1,0 +1,17 @@
+---
+import Layout from '../../../components/Layout.astro';
+import ChangesPage from '../../../components/ChangesPage.astro';
+import { getDiffData } from '../../../lib/getDiffData';
+
+const { diff, counts, fetchedAt, error } = await getDiffData(Astro.url);
+---
+<Layout title="Relation Changes" active="/diff/changes/relations" counts={counts}>
+  <ChangesPage
+    title="🔗 Relation Config Changes"
+    tier="relations"
+    action="Update allowed collections or sort field in Directus admin"
+    diff={diff}
+    fetchedAt={fetchedAt}
+    error={error}
+  />
+</Layout>

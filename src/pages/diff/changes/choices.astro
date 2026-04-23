@@ -1,0 +1,17 @@
+---
+import Layout from '../../../components/Layout.astro';
+import ChangesPage from '../../../components/ChangesPage.astro';
+import { getDiffData } from '../../../lib/getDiffData';
+
+const { diff, counts, fetchedAt, error } = await getDiffData(Astro.url);
+---
+<Layout title="Choice Changes" active="/diff/changes/choices" counts={counts}>
+  <ChangesPage
+    title="🎨 Option / Choice Changes"
+    tier="choices"
+    action="Update field options in Directus admin → Data Model → field settings"
+    diff={diff}
+    fetchedAt={fetchedAt}
+    error={error}
+  />
+</Layout>

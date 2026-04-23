@@ -1,0 +1,150 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  active: string;
+  counts: {
+    devOnly: number;
+    prodOnly: number;
+    renames: number;
+    schema: number;
+    relations: number;
+    choices: number;
+    options: number;
+    matched: number;
+    junctionConflicts: number;
+  };
+}
+
+const { title, active, counts } = Astro.props;
+
+type NavLink = { href: string; label: string; count: number; noCount?: boolean };
+type NavSep  = { separator: true; label: string };
+type NavItem = NavLink | NavSep;
+
+const navItems: NavItem[] = [
+  { href: '/diff',                   label: '📊 Summary',          count: 0,                  noCount: true },
+  { href: '/diff/dev-only',          label: '📥 Dev Only',          count: counts.devOnly },
+  { href: '/diff/prod-only',         label: '📤 Prod Only',         count: counts.prodOnly },
+  { href: '/diff/renames',           label: '🔍 Possible Renames',  count: counts.renames },
+  { href: '/diff/changes/schema',    label: '🚨 Schema Changes',    count: counts.schema },
+  { href: '/diff/changes/relations', label: '🔗 Relation Changes',  count: counts.relations },
+  { href: '/diff/changes/choices',   label: '🎨 Choice Changes',    count: counts.choices },
+  { href: '/diff/changes/options',   label: '⚙️ Option Changes',    count: counts.options },
+  { href: '/diff/matched',           label: '✅ Matched',           count: counts.matched },
+  { href: '/diff/junction-conflicts',label: '⚡ Junction Conflicts',count: counts.junctionConflicts },
+  { separator: true, label: 'Visualise' },
+  { href: '/diff/graph', label: '🕸️ Relationship Graph', count: 0, noCount: true },
+  { separator: true, label: 'Content' },
+  { href: '/diff/pages', label: '📄 Pages', count: 0, noCount: true },
+];
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Schema Diff — {title}</title>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-logo">🗄️ Schema Diff</div>
+    <nav class="sidebar-nav">
+      {navItems.map(item => (
+        'separator' in item
+          ? <div class="sidebar-sep">{item.label}</div>
+          : (
+            <a href={item.href} class={active === item.href ? 'active' : ''}>
+              <span>{item.label}</span>
+              {item.count > 0    && <span class="sidebar-count nonzero">{item.count}</span>}
+              {item.count === 0 && !item.noCount && <span class="sidebar-count">0</span>}
+            </a>
+          )
+      ))}
+    </nav>
+  </aside>
+  <main class="main">
+    <slot />
+  </main>
+</div>
+
+<script>
+  import '../scripts/section-search-client';
+</script>
+
+<script>
+// Global apply-button state machine
+// Each apply button lives inside a <div class="apply-wrap" data-state="idle"
+//   data-action="create|update" data-entity="collection|field|relation"
+//   data-item='{}' data-changes='[]' data-collection="optional">
+async function applyChange(wrap: HTMLElement) {
+  if (wrap.dataset.state === 'loading' || wrap.dataset.state === 'success') return;
+  wrap.dataset.state = 'loading';
+  const btn = wrap.querySelector<HTMLButtonElement>('.apply-btn')!;
+  btn.textContent = 'Applying…';
+  const errEl = wrap.querySelector<HTMLElement>('.error-msg');
+  if (errEl) errEl.textContent = '';
+
+  try {
+    const payload = {
+      action:     wrap.dataset.action,
+      entity:     wrap.dataset.entity,
+      item:       JSON.parse(wrap.dataset.item   ?? '{}'),
+      changes:    JSON.parse(wrap.dataset.changes ?? '[]'),
+      collection: wrap.dataset.collection,
+    };
+    const res = await fetch('/api/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      wrap.dataset.state = 'success';
+      btn.textContent = '✓ Applied';
+    } else {
+      throw new Error(json.error ?? 'Unknown error');
+    }
+  } catch (err: unknown) {
+    wrap.dataset.state = 'error';
+    btn.textContent = '✗ Failed';
+    const msg = err instanceof Error ? err.message : String(err);
+    if (errEl) errEl.textContent = msg;
+  }
+}
+
+// Delegate clicks on all apply buttons
+document.addEventListener('click', (e) => {
+  const btn = (e.target as Element).closest<HTMLElement>('.apply-btn');
+  if (!btn) return;
+  const wrap = btn.closest<HTMLElement>('.apply-wrap');
+  if (wrap) applyChange(wrap);
+});
+
+// Bulk apply helper — exposed on window so inline onclick handlers can call it
+async function _applyAll(selector: string, progressId: string) {
+  const wraps = Array.from(document.querySelectorAll<HTMLElement>(selector))
+    .filter(w => {
+      const tr = w.closest('tr');
+      if (tr?.classList.contains('is-search-hidden')) return false;
+      return w.dataset.state === 'idle' && !w.querySelector<HTMLButtonElement>('.apply-btn')!.disabled;
+    });
+  const bar = document.getElementById(progressId) as HTMLProgressElement | null;
+  const counter = document.getElementById(progressId + '-counter');
+  if (bar) { bar.max = wraps.length; bar.value = 0; bar.style.display = 'block'; }
+  let done = 0;
+  for (const wrap of wraps) {
+    await applyChange(wrap);
+    done++;
+    if (bar) bar.value = done;
+    if (counter) counter.textContent = `${done} / ${wraps.length}`;
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
+(window as any).applyAll = _applyAll;
+</script>
+
+</body>
+</html>

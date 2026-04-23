@@ -1,0 +1,221 @@
+---
+import Layout from '../../../../components/Layout.astro';
+import { getDiffData } from '../../../../lib/getDiffData';
+
+const { collection } = Astro.params as { collection: string };
+const { counts }     = await getDiffData(Astro.url);
+
+const res  = await fetch(new URL('/api/pages', Astro.url));
+const data = await res.json();
+
+interface PageItem {
+  id: number | string;
+  status: string;
+  title: string;
+  slug: string | null;
+}
+
+interface PageCollection {
+  collection: string;
+  label: string;
+  totalItems: number;
+  statusBreakdown: Record<string, number>;
+  hasContent: boolean;
+  blockJunction: string | null;
+  allowedBlockTypes: string[];
+  items: PageItem[];
+  error?: string;
+}
+
+const allCollections: PageCollection[] = data.pageCollections ?? [];
+const coll = allCollections.find(c => c.collection === collection);
+
+const notFound      = !coll;
+const label         = coll?.label ?? collection;
+const items         = coll?.items ?? [];
+const statusBreakdown   = coll?.statusBreakdown ?? {};
+const allowedBlockTypes = coll?.allowedBlockTypes ?? [];
+const blockJunction     = coll?.blockJunction ?? null;
+
+const statusOrder = ['published', 'draft', 'review', 'archived', 'unknown'];
+const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
+  return (statusOrder.indexOf(a) === -1 ? 99 : statusOrder.indexOf(a))
+       - (statusOrder.indexOf(b) === -1 ? 99 : statusOrder.indexOf(b));
+});
+---
+<Layout title={`Pages — ${label}`} active="/diff/pages" counts={counts}>
+  <div class="banner">
+    <div>
+      <div class="breadcrumb">
+        <a href="/diff/pages">Pages</a>
+        <span class="sep">›</span>
+        <span>{label}</span>
+      </div>
+      <h1>{label}</h1>
+      <div class="meta">
+        <code class="mono">{collection}</code>
+        {coll && ` · ${coll.totalItems} item(s)`}
+      </div>
+    </div>
+    <a href={`/diff/pages/${collection}/relations`} class="btn">
+      🔗 M2M Relations
+    </a>
+  </div>
+
+  {notFound && (
+    <div class="error-banner">
+      Collection <code class="mono">{collection}</code> was not found in the pages data.
+      It may not be a page collection or may not have a <code class="mono">status</code> field.
+    </div>
+  )}
+
+  {coll?.error && (
+    <div class="error-banner">⚠️ {coll.error}</div>
+  )}
+
+  {!notFound && (
+    <>
+      <!-- Status breakdown pills -->
+      {sortedStatuses.length > 0 && (
+        <div class="status-row">
+          {sortedStatuses.map(([status, count]) => (
+            <span class={`chip chip-${status}`}>
+              {status}: <strong>{count}</strong>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <!-- Block types (if this collection uses a builder) -->
+      {allowedBlockTypes.length > 0 && (
+        <div class="block-section">
+          <div class="section-header" style="margin-bottom: 8px;">
+            Block Types ({allowedBlockTypes.length})
+            {blockJunction && (
+              <span style="font-size: 11px; color: var(--color-muted); margin-left: 8px; font-weight: 400;">
+                via <code class="mono">{blockJunction}</code>
+              </span>
+            )}
+          </div>
+          <div class="block-tags">
+            {allowedBlockTypes.map((bt) => (
+              <code class="mono">{bt}</code>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <!-- Empty state -->
+      {items.length === 0 && (
+        <div class="empty-state">
+          <div class="empty-icon">📭</div>
+          <div class="empty-msg">No content items found in <strong>{label}</strong></div>
+          <div class="empty-sub">
+            This collection exists in the schema but has no items yet.
+            Migration for this section may not have started.
+          </div>
+        </div>
+      )}
+
+      <!-- Items table -->
+      {items.length > 0 && (
+        <div data-section-search>
+          <div class="section-header">{label} ({items.length} item{items.length !== 1 ? 's' : ''})</div>
+          <div class="section-search-bar">
+            <label class="visually-hidden" for="items-search">Search items</label>
+            <input
+              type="search"
+              id="items-search"
+              class="section-search-input"
+              placeholder="Fuzzy search title, slug, ID…"
+              autocomplete="off"
+            />
+            <span class="section-search-count" aria-live="polite"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 80px;">ID</th>
+                  <th>Title / Name</th>
+                  <th>Slug</th>
+                  <th style="width: 110px;">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr data-search={`${item.id} ${item.title ?? ''} ${item.slug ?? ''}`.toLowerCase()}>
+                    <td><code class="mono" style="color: var(--color-muted)">{item.id}</code></td>
+                    <td class="search-hl-target">{item.title}</td>
+                    <td>
+                      {item.slug
+                        ? <code class="mono" style="color: var(--color-muted)">{item.slug}</code>
+                        : <span class="muted">—</span>
+                      }
+                    </td>
+                    <td>
+                      <span class={`chip chip-${item.status}`}>{item.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  )}
+</Layout>
+
+<style>
+.breadcrumb {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-bottom: 4px;
+}
+.breadcrumb a { color: var(--color-accent); }
+.breadcrumb .sep { margin: 0 6px; }
+
+.status-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.block-section { margin-bottom: 24px; }
+.block-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+  margin-top: 24px;
+}
+.empty-icon { font-size: 36px; margin-bottom: 12px; }
+.empty-msg  { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+.empty-sub  { font-size: 13px; color: var(--color-muted); max-width: 400px; margin: 0 auto; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.chip-published { background: rgba(34,197,94,0.15);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.3); }
+.chip-draft     { background: rgba(251,191,36,0.15);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.3); }
+.chip-review    { background: rgba(99,102,241,0.15);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.3); }
+.chip-archived  { background: rgba(148,163,184,0.15); color: var(--color-muted);   border: 1px solid rgba(148,163,184,0.3); }
+.chip-unknown   { background: rgba(148,163,184,0.1);  color: var(--color-muted);   border: 1px solid var(--color-border); }
+
+.muted { color: var(--color-muted); font-size: 12px; }
+</style>

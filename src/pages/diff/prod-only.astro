@@ -1,0 +1,116 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { diff, counts, fetchedAt, error } = await getDiffData(Astro.url);
+const { collections, fields, relations } = diff;
+
+// Group fields by collection
+const fieldsByCollection = new Map<string, any[]>();
+for (const f of fields.deletes) {
+  const coll = f.collection as string;
+  if (!fieldsByCollection.has(coll)) fieldsByCollection.set(coll, []);
+  fieldsByCollection.get(coll)!.push(f);
+}
+
+const fieldRows: { coll: string; f: any }[] = [];
+for (const [coll, items] of fieldsByCollection.entries()) {
+  for (const f of items) {
+    fieldRows.push({ coll, f });
+  }
+}
+
+const prodOnlyCount = counts.prodOnly;
+const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown';
+---
+<Layout title="Prod Only" active="/diff/prod-only" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>📤 In Prod Only</h1>
+      <div class="meta">{prodOnlyCount} item(s) exist on prod but not dev · fetched {fetchedAtStr}</div>
+    </div>
+  </div>
+
+  {error && <div class="error-banner">⚠️ {error}</div>}
+
+  <div style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 6px; padding: 12px 16px; margin-bottom: 24px; font-size: 13px;">
+    ⚠️ <strong>Review carefully.</strong> These items exist on prod but not in dev.
+    They may be stale, or they may need to be created in dev too.
+    No apply buttons here — deletions must be done manually in Directus admin.
+  </div>
+
+  {prodOnlyCount === 0 && <p class="empty">Nothing in prod only — schemas are in sync for this category.</p>}
+
+  {collections.deletes.length > 0 && (
+    <div data-section-search>
+      <div class="section-header">Collections ({collections.deletes.length})</div>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="prod-search-collections">Search collections</label>
+        <input type="search" id="prod-search-collections" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Collection</th></tr></thead>
+          <tbody>
+            {collections.deletes.map((c: any) => (
+              <tr data-search={`${c.collection}`.toLowerCase()}>
+                <td><code class="mono search-hl-target">{c.collection}</code></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+
+  {fields.deletes.length > 0 && (
+    <div data-section-search style="margin-top: 32px;">
+      <div class="section-header">Fields ({fields.deletes.length})</div>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="prod-search-fields">Search fields</label>
+        <input type="search" id="prod-search-fields" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Collection</th><th>Field</th><th>Type</th></tr></thead>
+          <tbody>
+            {fieldRows.map(({ coll, f }) => (
+              <tr data-search={`${coll} ${f.field} ${f.type ?? ''}`.toLowerCase()}>
+                <td><code class="mono search-hl-target">{coll}</code></td>
+                <td><code class="mono search-hl-target">{f.field}</code></td>
+                <td><span class="badge badge-options search-hl-target">{f.type ?? '?'}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+
+  {relations.deletes.length > 0 && (
+    <div data-section-search style="margin-top: 32px;">
+      <div class="section-header">Relations ({relations.deletes.length})</div>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="prod-search-relations">Search relations</label>
+        <input type="search" id="prod-search-relations" class="section-search-input" placeholder="Fuzzy search (space = AND)…" autocomplete="off" />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Collection</th><th>Field</th><th>Related</th></tr></thead>
+          <tbody>
+            {relations.deletes.map((r: any) => (
+              <tr data-search={`${r.collection} ${r.field} ${r.related_collection ?? ''}`.toLowerCase()}>
+                <td><code class="mono search-hl-target">{r.collection}</code></td>
+                <td><code class="mono search-hl-target">{r.field}</code></td>
+                <td><code class="mono search-hl-target">{r.related_collection ?? '—'}</code></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+</Layout>
