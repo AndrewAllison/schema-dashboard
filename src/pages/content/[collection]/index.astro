@@ -116,7 +116,10 @@ const contentDiffs = matched.reduce((s, c) => s + c.changedCount + c.devOnlyCoun
                 {rows.map((row) => {
                   const state    = getEnvState(row);
                   const itemKey  = `${row.matchKeyType}:${row.matchKey}`;
-                  const href     = `/content/${collection}/${encodeURIComponent(itemKey)}`;
+                  // Preserve literal `/` as path separators so %2F never appears in the URL
+                  // (Node.js decodes %2F before routing, breaking [itemKey] param matching).
+                  // [...itemKey] catch-all route then re-joins segments with `/`.
+                  const href     = `/content/${collection}/${itemKey.split('/').map(encodeURIComponent).join('/')}`;
                   return (
                     <tr data-env={state} class={`row-${state}`}>
                       <td>
