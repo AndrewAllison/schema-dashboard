@@ -1,0 +1,990 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { counts, error: diffError } = await getDiffData(Astro.url);
+
+// Load page collections from existing pages API
+const pagesRes  = await fetch(new URL('/api/pages', Astro.url));
+const pagesData = await pagesRes.json();
+
+interface PageCollection {
+  collection: string;
+  label: string;
+  totalItems: number;
+  statusBreakdown: Record<string, number>;
+  hasContent: boolean;
+  allowedBlockTypes: string[];
+}
+
+const pageCollections: PageCollection[] = (pagesData.pageCollections ?? []).filter(
+  (c: PageCollection) => c.allowedBlockTypes.length > 0,
+);
+---
+
+<Layout title="Page Tree" active="/diff/page-tree" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>Page Tree Explorer</h1>
+      <div class="meta">
+        Browse pages and their blocks — quickly identify which block has which field options
+      </div>
+    </div>
+  </div>
+
+  {(diffError) && <div class="error-banner">⚠️ {diffError}</div>}
+
+  <div class="tree-layout">
+    <!-- LEFT: collection + page list -->
+    <div class="panel-left">
+      <div class="panel-header">
+        <span>Collections</span>
+        <span class="panel-count">{pageCollections.length}</span>
+      </div>
+      <div class="search-wrap">
+        <input type="search" id="collection-search" placeholder="Filter collections…" autocomplete="off" />
+      </div>
+      {pageCollections.length === 0 && (
+        <p class="empty-msg">No page collections with blocks found.</p>
+      )}
+      <ul class="coll-list" id="coll-list">
+        {pageCollections.map((c) => (
+          <li
+            class="coll-item"
+            data-collection={c.collection}
+            data-search={`${c.collection} ${c.label}`.toLowerCase()}
+          >
+            <button class="coll-btn" data-collection={c.collection}>
+              <span class="coll-icon">📁</span>
+              <span class="coll-name">{c.label}</span>
+              <span class="coll-count">{c.totalItems}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+
+    <!-- RIGHT: tree detail -->
+    <div class="panel-right" id="panel-right">
+      <div class="tree-placeholder" id="tree-placeholder">
+        <div class="placeholder-inner">
+          <div class="placeholder-icon">🌳</div>
+          <p>Select a collection to explore its pages and blocks</p>
+          <p class="placeholder-hint">
+            Tip: use the search to find which block has a specific background colour option
+          </p>
+        </div>
+      </div>
+      <div class="tree-loading" id="tree-loading" style="display:none">
+        <div class="spinner"></div> Loading…
+      </div>
+      <div class="tree-content" id="tree-content" style="display:none">
+        <div class="tree-header" id="tree-header"></div>
+        <div class="tree-filter-row">
+          <div class="env-toggle" id="env-toggle">
+            <button class="env-btn env-btn-prod active" data-env="prod">Prod</button>
+            <button class="env-btn env-btn-dev" data-env="dev">Dev</button>
+            <button class="env-btn env-btn-both" data-env="both">Both</button>
+          </div>
+          <input type="search" id="page-search" placeholder="Filter pages / blocks…" autocomplete="off" />
+          <button class="btn btn-sm" id="expand-all-btn">Expand all</button>
+          <button class="btn btn-sm" id="collapse-all-btn">Collapse all</button>
+          <button class="btn btn-sm" id="refresh-tree-btn">↻ Refresh</button>
+        </div>
+        <div id="tree-body"></div>
+      </div>
+    </div>
+  </div>
+</Layout>
+
+<style>
+/* ─── layout ─────────────────────────────────────────────────── */
+.tree-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 0;
+  min-height: calc(100vh - 160px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* ─── left panel ─────────────────────────────────────────────── */
+.panel-left {
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.panel-count {
+  background: var(--color-border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+}
+
+.search-wrap {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.search-wrap input,
+#page-search {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.search-wrap input:focus,
+#page-search:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.coll-list {
+  list-style: none;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.coll-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  background: none;
+  border: none;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: all 0.12s;
+}
+
+.coll-btn:hover {
+  background: rgba(99,102,241,0.08);
+  color: var(--color-text);
+}
+
+.coll-btn.active {
+  background: rgba(99,102,241,0.15);
+  color: var(--color-accent);
+}
+
+.coll-icon { font-size: 14px; flex-shrink: 0; }
+.coll-name { flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.coll-count {
+  background: var(--color-border);
+  color: var(--color-muted);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.coll-item.hidden { display: none; }
+
+/* ─── right panel ────────────────────────────────────────────── */
+.panel-right {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  overflow-y: auto;
+}
+
+.tree-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 400px;
+}
+
+.placeholder-inner {
+  text-align: center;
+  color: var(--color-muted);
+}
+
+.placeholder-icon { font-size: 48px; margin-bottom: 16px; }
+.placeholder-hint { font-size: 12px; margin-top: 8px; }
+
+.tree-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px;
+  color: var(--color-muted);
+}
+
+.spinner {
+  width: 18px; height: 18px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.tree-header {
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tree-header h2 { font-size: 17px; font-weight: 700; }
+.tree-header .tree-meta { font-size: 12px; color: var(--color-muted); margin-top: 4px; }
+
+.tree-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
+}
+
+.tree-filter-row #page-search { max-width: 220px; }
+
+/* ─── env toggle ──────────────────────────────────────────────── */
+.env-toggle {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.env-btn {
+  padding: 5px 11px;
+  font-size: 11px;
+  font-weight: 700;
+  background: none;
+  border: none;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.env-btn + .env-btn {
+  border-left: 1px solid var(--color-border);
+}
+
+.env-btn:hover { color: var(--color-text); background: rgba(255,255,255,0.04); }
+
+.env-btn-prod.active  { background: rgba(52,211,153,0.15);  color: #34d399; }
+.env-btn-dev.active   { background: rgba(96,165,250,0.15);  color: #60a5fa; }
+.env-btn-both.active  { background: rgba(168,85,247,0.15);  color: #c084fc; }
+
+.btn-sm {
+  padding: 5px 10px;
+  font-size: 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.btn-sm:hover { border-color: var(--color-accent); color: var(--color-accent); }
+
+/* ─── tree body ──────────────────────────────────────────────── */
+#tree-body {
+  padding: 10px 14px 20px;
+}
+
+#tree-body.split-mode {
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+}
+
+/* ─── split panels (both mode) ───────────────────────────────── */
+.split-panel {
+  padding: 10px 14px 20px;
+  min-width: 0;
+}
+
+.split-panel + .split-panel {
+  border-left: 1px solid var(--color-border);
+}
+
+.split-env-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 0 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.split-env-header .env-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.split-env-dev  { color: #60a5fa; }
+.split-env-prod { color: #34d399; }
+.split-env-dev  .env-dot { background: #60a5fa; }
+.split-env-prod .env-dot { background: #34d399; }
+
+.split-page-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--color-muted);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ─── page tree nodes ────────────────────────────────────────── */
+.page-node {
+  margin-bottom: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.page-node.hidden { display: none; }
+
+.page-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 13px;
+  background: var(--color-surface);
+  border: none;
+  cursor: pointer;
+  color: var(--color-text);
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.page-toggle:hover { background: rgba(99,102,241,0.08); }
+
+.page-arrow {
+  font-size: 10px;
+  color: var(--color-muted);
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.page-node.open .page-arrow { transform: rotate(90deg); }
+
+.page-icon { font-size: 14px; flex-shrink: 0; }
+
+/* permalink is the primary identifier */
+.page-permalink {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-accent);
+  font-weight: 600;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+.page-title {
+  font-size: 11px;
+  color: var(--color-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* when there is no permalink, elevate the title */
+.page-title.primary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.status-chip {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+.status-published { background: rgba(34,197,94,0.15);  color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+.status-draft      { background: rgba(251,191,36,0.15); color: #f59e0b; border: 1px solid rgba(251,191,36,0.3); }
+.status-other      { background: rgba(99,102,241,0.15); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.3); }
+
+.page-block-count { font-size: 11px; color: var(--color-muted); flex-shrink: 0; }
+
+.blocks-container {
+  display: none;
+  padding: 6px 10px 8px 32px;
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+}
+
+.page-node.open .blocks-container { display: block; }
+
+/* ─── block items ────────────────────────────────────────────── */
+.block-node {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 3px;
+  border: 1px solid rgba(45,49,72,0.7);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.block-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  background: rgba(255,255,255,0.025);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+  color: var(--color-text);
+}
+
+.block-toggle:hover { background: rgba(99,102,241,0.06); }
+
+.block-arrow {
+  font-size: 9px;
+  color: var(--color-muted);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.block-node.open .block-arrow { transform: rotate(90deg); }
+
+.block-sort {
+  font-size: 10px;
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  width: 20px;
+  text-align: right;
+}
+
+.block-type-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.block-internal-title {
+  font-size: 12px;
+  color: var(--color-muted);
+  font-style: italic;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inline choice preview chips on the toggle row */
+.choice-preview { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+
+.choice-chip {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-weight: 600;
+  border: 1px solid;
+}
+
+.choice-chip-active {
+  background: rgba(99,102,241,0.2);
+  color: #a5b4fc;
+  border-color: rgba(99,102,241,0.4);
+}
+
+.choice-chip-missing {
+  background: rgba(239,68,68,0.1);
+  color: #fca5a5;
+  border-color: rgba(239,68,68,0.3);
+}
+
+.block-detail {
+  display: none;
+  padding: 8px 12px 10px 36px;
+  border-top: 1px solid rgba(45,49,72,0.5);
+  background: rgba(0,0,0,0.15);
+}
+
+.block-node.open .block-detail { display: block; }
+
+.field-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 4px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(45,49,72,0.3);
+}
+
+.field-row:last-child { border-bottom: none; }
+
+.field-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted);
+  width: 160px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.field-value { color: var(--color-text); flex: 1; word-break: break-word; }
+
+.field-value-null { color: var(--color-muted); font-style: italic; }
+
+/* Choices row — all available options for a dropdown field */
+.choices-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 5px 0 2px;
+  font-size: 12px;
+}
+
+.choices-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-muted);
+  width: 160px;
+  flex-shrink: 0;
+  padding-top: 4px;
+  font-style: italic;
+}
+
+.choices-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.opt-chip {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-weight: 500;
+}
+
+.opt-current {
+  background: rgba(99,102,241,0.25);
+  color: #c7d2fe;
+  border-color: rgba(99,102,241,0.5);
+  font-weight: 700;
+}
+
+.opt-available {
+  background: rgba(255,255,255,0.04);
+  color: var(--color-muted);
+  border-color: var(--color-border);
+}
+
+.no-blocks { color: var(--color-muted); font-size: 12px; font-style: italic; padding: 6px 0; }
+
+.empty-msg { padding: 16px 14px; color: var(--color-muted); font-size: 12px; font-style: italic; }
+</style>
+
+<script>
+// ── Data types (mirrored from API response) ──────────────────────
+interface ChoiceOption { value: string; label: string; }
+interface BlockField   { field: string; value: unknown; }
+interface BlockItem {
+  junctionId: string | number;
+  sort: number;
+  blockType: string;
+  blockLabel: string;
+  blockId: string;
+  fields: BlockField[];
+}
+interface PageItem {
+  id: string | number;
+  title: string;
+  status: string;
+  slug: string | null;
+  permalink: string | null;
+  blockCount: number;
+  blocks: BlockItem[];
+}
+interface PageTreeData {
+  label: string;
+  junctionTable: string;
+  allowedBlockTypes: string[];
+  blockFieldChoices: Record<string, Record<string, ChoiceOption[]>>;
+  pages: PageItem[];
+  fetchedAt: number;
+  error?: string;
+}
+type ApiResponse =
+  | ({ env: 'dev' | 'prod' } & PageTreeData)
+  | { env: 'both'; dev: PageTreeData; prod: PageTreeData };
+
+// ── State ─────────────────────────────────────────────────────────
+let currentCollection: string | null = null;
+let currentEnv: 'dev' | 'prod' | 'both' = 'prod';
+
+// ── DOM refs ──────────────────────────────────────────────────────
+const placeholder    = document.getElementById('tree-placeholder')!;
+const loading        = document.getElementById('tree-loading')!;
+const content        = document.getElementById('tree-content')!;
+const treeHeader     = document.getElementById('tree-header')!;
+const treeBody       = document.getElementById('tree-body')!;
+const pageSearch     = document.getElementById('page-search') as HTMLInputElement;
+const collSearch     = document.getElementById('collection-search') as HTMLInputElement;
+const expandAllBtn   = document.getElementById('expand-all-btn')!;
+const collapseAllBtn = document.getElementById('collapse-all-btn')!;
+const refreshBtn     = document.getElementById('refresh-tree-btn')!;
+
+// ── Collection list filter ─────────────────────────────────────────
+collSearch.addEventListener('input', () => {
+  const q = collSearch.value.toLowerCase();
+  document.querySelectorAll<HTMLLIElement>('#coll-list .coll-item').forEach((li) => {
+    const match = !q || (li.dataset.search ?? '').includes(q);
+    li.classList.toggle('hidden', !match);
+  });
+});
+
+// ── Collection click ──────────────────────────────────────────────
+document.getElementById('coll-list')!.addEventListener('click', (e) => {
+  const btn = (e.target as Element).closest<HTMLButtonElement>('.coll-btn');
+  if (!btn) return;
+  const coll = btn.dataset.collection!;
+  selectCollection(coll, false);
+});
+
+// ── Env toggle ────────────────────────────────────────────────────
+document.getElementById('env-toggle')!.addEventListener('click', (e) => {
+  const btn = (e.target as Element).closest<HTMLButtonElement>('.env-btn');
+  if (!btn) return;
+  const env = btn.dataset.env as 'dev' | 'prod' | 'both';
+  if (env === currentEnv) return;
+
+  currentEnv = env;
+
+  // Update active state
+  document.querySelectorAll<HTMLButtonElement>('.env-btn').forEach((b) => {
+    b.classList.remove('active');
+  });
+  btn.classList.add('active');
+
+  // Reload if a collection is already selected
+  if (currentCollection) selectCollection(currentCollection, false);
+});
+
+async function selectCollection(collection: string, forceRefresh: boolean) {
+  currentCollection = collection;
+
+  // Highlight active collection
+  document.querySelectorAll<HTMLButtonElement>('.coll-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.collection === collection);
+  });
+
+  placeholder.style.display = 'none';
+  loading.style.display     = 'flex';
+  content.style.display     = 'none';
+
+  const params = new URLSearchParams({ collection, env: currentEnv });
+  if (forceRefresh) params.set('refresh', 'true');
+  const res = await fetch(`/api/page-tree?${params}`);
+  const apiResponse = await res.json() as ApiResponse;
+
+  loading.style.display = 'none';
+  content.style.display = 'flex';
+  content.style.flexDirection = 'column';
+
+  if (apiResponse.env === 'both') {
+    renderBothTree(apiResponse.dev, apiResponse.prod);
+  } else {
+    renderTree(apiResponse);
+  }
+}
+
+// ── Render single env ──────────────────────────────────────────────
+function renderTree(data: PageTreeData) {
+  const total     = data.pages.length;
+  const published = data.pages.filter((p) => p.status === 'published').length;
+  treeHeader.innerHTML = `
+    <h2>${data.label}</h2>
+    <div class="tree-meta">
+      ${total} page${total !== 1 ? 's' : ''} &middot;
+      ${published} published &middot;
+      ${data.allowedBlockTypes.length} block type${data.allowedBlockTypes.length !== 1 ? 's' : ''} &middot;
+      junction: <code>${data.junctionTable}</code>
+      ${data.error ? `<span style="color:var(--color-error)"> &middot; ⚠️ ${data.error}</span>` : ''}
+    </div>`;
+
+  treeBody.className = '';
+  treeBody.innerHTML = '';
+  pageSearch.value   = '';
+
+  if (data.pages.length === 0) {
+    treeBody.innerHTML = '<p class="empty">No pages found in this collection.</p>';
+    return;
+  }
+
+  for (const page of data.pages) {
+    treeBody.appendChild(buildPageNode(page, data.blockFieldChoices));
+  }
+}
+
+// ── Render both envs side by side ─────────────────────────────────
+function renderBothTree(dev: PageTreeData, prod: PageTreeData) {
+  treeHeader.innerHTML = `
+    <h2>${prod.label}</h2>
+    <div class="tree-meta">
+      Dev: ${dev.pages.length} page${dev.pages.length !== 1 ? 's' : ''} &middot;
+      Prod: ${prod.pages.length} page${prod.pages.length !== 1 ? 's' : ''}
+      ${dev.error ? `<span style="color:var(--color-error)"> &middot; Dev ⚠️ ${dev.error}</span>` : ''}
+      ${prod.error ? `<span style="color:var(--color-error)"> &middot; Prod ⚠️ ${prod.error}</span>` : ''}
+    </div>`;
+
+  treeBody.className = 'split-mode';
+  treeBody.innerHTML = '';
+  pageSearch.value   = '';
+
+  // Dev panel
+  const devPanel = document.createElement('div');
+  devPanel.className = 'split-panel';
+  const devHeader = document.createElement('div');
+  devHeader.className = 'split-env-header split-env-dev';
+  devHeader.innerHTML = `<span class="env-dot"></span> Dev <span class="split-page-count">${dev.pages.length} pages</span>`;
+  devPanel.appendChild(devHeader);
+  if (dev.pages.length === 0) {
+    devPanel.innerHTML += '<p class="empty-msg">No pages found.</p>';
+  } else {
+    for (const page of dev.pages) {
+      devPanel.appendChild(buildPageNode(page, dev.blockFieldChoices));
+    }
+  }
+
+  // Prod panel
+  const prodPanel = document.createElement('div');
+  prodPanel.className = 'split-panel';
+  const prodHeader = document.createElement('div');
+  prodHeader.className = 'split-env-header split-env-prod';
+  prodHeader.innerHTML = `<span class="env-dot"></span> Prod <span class="split-page-count">${prod.pages.length} pages</span>`;
+  prodPanel.appendChild(prodHeader);
+  if (prod.pages.length === 0) {
+    prodPanel.innerHTML += '<p class="empty-msg">No pages found.</p>';
+  } else {
+    for (const page of prod.pages) {
+      prodPanel.appendChild(buildPageNode(page, prod.blockFieldChoices));
+    }
+  }
+
+  treeBody.appendChild(devPanel);
+  treeBody.appendChild(prodPanel);
+}
+
+function buildPageNode(page: PageItem, choicesMap: PageTreeData['blockFieldChoices']): HTMLElement {
+  const node = document.createElement('div');
+  node.className   = 'page-node';
+  node.dataset.title = page.title.toLowerCase();
+
+  // Determine what to use as the permalink display
+  const permalinkDisplay = page.permalink ?? (page.slug ? `/${page.slug}` : null);
+  node.dataset.permalink = (permalinkDisplay ?? '').toLowerCase();
+
+  const statusClass = page.status === 'published' ? 'status-published'
+                    : page.status === 'draft'      ? 'status-draft'
+                    : 'status-other';
+
+  const toggle = document.createElement('button');
+  toggle.className = 'page-toggle';
+
+  if (permalinkDisplay) {
+    toggle.innerHTML = `
+      <span class="page-arrow">▶</span>
+      <span class="page-icon">📄</span>
+      <span class="page-permalink">${esc(permalinkDisplay)}</span>
+      <span class="page-title">${esc(page.title)}</span>
+      <span class="status-chip ${statusClass}">${esc(page.status)}</span>
+      <span class="page-block-count">${page.blockCount} block${page.blockCount !== 1 ? 's' : ''}</span>`;
+  } else {
+    toggle.innerHTML = `
+      <span class="page-arrow">▶</span>
+      <span class="page-icon">📄</span>
+      <span class="page-title primary">${esc(page.title)}</span>
+      <span class="status-chip ${statusClass}">${esc(page.status)}</span>
+      <span class="page-block-count">${page.blockCount} block${page.blockCount !== 1 ? 's' : ''}</span>`;
+  }
+
+  const blocksContainer = document.createElement('div');
+  blocksContainer.className = 'blocks-container';
+
+  if (page.blocks.length === 0) {
+    blocksContainer.innerHTML = '<div class="no-blocks">No blocks</div>';
+  } else {
+    for (const block of page.blocks) {
+      blocksContainer.appendChild(buildBlockNode(block, choicesMap[block.blockType] ?? {}));
+    }
+  }
+
+  toggle.addEventListener('click', () => node.classList.toggle('open'));
+
+  node.appendChild(toggle);
+  node.appendChild(blocksContainer);
+  return node;
+}
+
+function buildBlockNode(block: BlockItem, choices: Record<string, ChoiceOption[]>): HTMLElement {
+  const node = document.createElement('div');
+  node.className = 'block-node';
+
+  const internalTitle = (block.fields.find((f) => f.field === 'internal_title')?.value as string) ?? null;
+  const choicePreviewHtml = buildChoicePreview(block.fields, choices);
+
+  const toggle = document.createElement('button');
+  toggle.className = 'block-toggle';
+  toggle.innerHTML = `
+    <span class="block-arrow">▶</span>
+    <span class="block-sort">#${block.sort}</span>
+    <span class="block-type-label">${esc(block.blockLabel)}</span>
+    ${internalTitle ? `<span class="block-internal-title">${esc(internalTitle)}</span>` : '<span class="block-internal-title" style="opacity:.5">—</span>'}
+    ${choicePreviewHtml}`;
+
+  toggle.addEventListener('click', () => node.classList.toggle('open'));
+
+  const detail = document.createElement('div');
+  detail.className = 'block-detail';
+
+  for (const { field, value } of block.fields) {
+    if (field === 'internal_title') continue;
+    const fieldChoices = choices[field] ?? null;
+
+    if (fieldChoices) {
+      const current = String(value ?? '');
+      detail.appendChild(buildFieldRow(field, value));
+      detail.appendChild(buildChoicesRow(field, current, fieldChoices));
+    } else {
+      detail.appendChild(buildFieldRow(field, value));
+    }
+  }
+
+  for (const [field, fieldChoices] of Object.entries(choices)) {
+    if (block.fields.some((f) => f.field === field)) continue;
+    detail.appendChild(buildChoicesRow(field, '', fieldChoices));
+  }
+
+  if (detail.children.length === 0) {
+    detail.innerHTML = '<p class="empty" style="font-size:12px;padding:4px 0">No fields loaded</p>';
+  }
+
+  node.appendChild(toggle);
+  node.appendChild(detail);
+  return node;
+}
+
+function buildChoicePreview(fields: BlockField[], choices: Record<string, ChoiceOption[]>): string {
+  const chips: string[] = [];
+  for (const [field, opts] of Object.entries(choices)) {
+    const f = fields.find((f) => f.field === field);
+    if (!f) continue;
+    const current = String(f.value ?? '');
+    if (!current) continue;
+    const exists = opts.some((o) => o.value === current);
+    const cls = exists ? 'choice-chip choice-chip-active' : 'choice-chip choice-chip-missing';
+    const title = exists ? `${field}: ${current}` : `${field}: "${current}" is NOT in Directus choices!`;
+    chips.push(`<span class="${cls}" title="${esc(title)}">${esc(current)}</span>`);
+  }
+  return chips.length ? `<span class="choice-preview">${chips.join('')}</span>` : '';
+}
+
+function buildFieldRow(field: string, value: unknown): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'field-row';
+  const display = value == null ? '<span class="field-value-null">null</span>'
+                : `<span class="field-value">${esc(String(value))}</span>`;
+  row.innerHTML = `<span class="field-name">${esc(field)}</span>${display}`;
+  return row;
+}
+
+function buildChoicesRow(field: string, current: string, options: ChoiceOption[]): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'choices-row';
+  const chips = options.map((o) => {
+    const isCurrent = o.value === current;
+    const cls = isCurrent ? 'opt-chip opt-current' : 'opt-chip opt-available';
+    return `<span class="${cls}" title="${esc(o.label)}">${esc(o.value)}</span>`;
+  }).join('');
+
+  const missingWarning = current && !options.some((o) => o.value === current)
+    ? `<span class="opt-chip" style="background:rgba(239,68,68,.15);color:#fca5a5;border-color:rgba(239,68,68,.4)">⚠ "${esc(current)}" not in choices</span>`
+    : '';
+
+  row.innerHTML = `
+    <span class="choices-label">↳ ${esc(field)} choices</span>
+    <span class="choices-chips">${chips}${missingWarning}</span>`;
+  return row;
+}
+
+// ── Page search / filter ──────────────────────────────────────────
+pageSearch.addEventListener('input', () => {
+  const q = pageSearch.value.toLowerCase().trim();
+  document.querySelectorAll<HTMLElement>('.page-node').forEach((node) => {
+    if (!q) { node.classList.remove('hidden'); return; }
+    const title     = node.dataset.title     ?? '';
+    const permalink = node.dataset.permalink ?? '';
+    const blocks    = node.querySelectorAll('.block-type-label, .block-internal-title');
+    const blockText = Array.from(blocks).map((b) => b.textContent ?? '').join(' ').toLowerCase();
+    node.classList.toggle('hidden', !title.includes(q) && !permalink.includes(q) && !blockText.includes(q));
+  });
+});
+
+// ── Expand / Collapse all ─────────────────────────────────────────
+expandAllBtn.addEventListener('click', () => {
+  document.querySelectorAll<HTMLElement>('.page-node:not(.hidden)').forEach((n) => n.classList.add('open'));
+  document.querySelectorAll<HTMLElement>('.block-node').forEach((n) => n.classList.add('open'));
+});
+collapseAllBtn.addEventListener('click', () => {
+  document.querySelectorAll<HTMLElement>('.page-node, .block-node').forEach((n) => n.classList.remove('open'));
+});
+
+// ── Refresh ───────────────────────────────────────────────────────
+refreshBtn.addEventListener('click', () => {
+  if (currentCollection) selectCollection(currentCollection, true);
+});
+
+// ── Helpers ───────────────────────────────────────────────────────
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+</script>

@@ -1,0 +1,870 @@
+---
+import Layout from '../../../components/Layout.astro';
+import { getDiffData } from '../../../lib/getDiffData';
+import { SITE_DEV_URL, SITE_PROD_URL } from '../../../lib/env';
+import type { ContentItemData, ContentItemFull } from '../../api/content-item';
+import type { BlockDiffData, BlockMatchedRow } from '../../api/block-diff';
+import type { ContentDiffData } from '../../api/content-diff';
+
+const { collection, itemKey } = Astro.params as { collection: string; itemKey: string };
+// itemKey is URL-decoded by Astro, e.g. 'slug:home-page'
+
+const { counts } = await getDiffData(Astro.url);
+
+const [itemRes, blockRes, diffRes] = await Promise.allSettled([
+  fetch(new URL(`/api/content-item?collection=${encodeURIComponent(collection)}&key=${encodeURIComponent(itemKey)}`, Astro.url)).then(r => r.json()),
+  fetch(new URL(`/api/block-diff?collection=${encodeURIComponent(collection)}&key=${encodeURIComponent(itemKey)}`, Astro.url)).then(r => r.json()),
+  fetch(new URL('/api/content-diff', Astro.url)).then(r => r.json()),
+]);
+
+const itemData: ContentItemData = itemRes.status === 'fulfilled' ? itemRes.value : { error: 'Failed to load item data' } as any;
+const blockData: BlockDiffData  = blockRes.status === 'fulfilled' ? blockRes.value : null as any;
+const diffData: ContentDiffData = diffRes.status === 'fulfilled' ? diffRes.value : { matched: [] } as any;
+
+const matched = diffData.matched ?? [];
+const contentDiffs = matched.reduce((s: number, c: any) => s + c.changedCount + c.devOnlyCount + c.prodOnlyCount, 0);
+
+// Parse match key for display
+const colonIdx  = itemKey.indexOf(':');
+const keyType   = colonIdx !== -1 ? itemKey.slice(0, colonIdx) : 'id';
+const keyValue  = colonIdx !== -1 ? itemKey.slice(colonIdx + 1) : itemKey;
+const collLabel = collection.replace(/^[a-z]+_[a-z]+_/, '').split('_').map((w: string) => w[0].toUpperCase() + w.slice(1)).join(' ');
+
+const devItem  = itemData.dev  ?? null;
+const prodItem = itemData.prod ?? null;
+const diffs    = itemData.diffs ?? [];
+const fields   = itemData.scalarFields ?? [];
+
+// Determine scenario
+const itemExists = { dev: !!devItem, prod: !!prodItem };
+const isDevOnly  = itemExists.dev  && !itemExists.prod;
+const isProdOnly = !itemExists.dev && itemExists.prod;
+const isBoth     = itemExists.dev  && itemExists.prod;
+
+// For rendering: build a full field list (diffs + in-sync)
+const diffFieldSet = new Set(diffs.map((d: any) => d.field));
+const diffByField  = new Map(diffs.map((d: any) => [d.field, d]));
+
+// Helper for rendering field values
+function renderValue(value: unknown, fieldType: string): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (fieldType === 'json' || typeof value === 'object') {
+    return JSON.stringify(value, null, 2);
+  }
+  return String(value);
+}
+
+function truncate(value: unknown, fieldType: string): string {
+  if (value === null || value === undefined) return '—';
+  const str = renderValue(value, fieldType);
+  if (str.length <= 120) return str;
+  return str.slice(0, 120) + '…';
+}
+
+function isLong(value: unknown, fieldType: string): boolean {
+  if (value === null || value === undefined) return false;
+  const str = renderValue(value, fieldType);
+  return str.length > 120;
+}
+
+// Serialize item data for client script
+const clientData = {
+  collection,
+  matchKey: itemKey,
+  devId:    devItem?.id   ?? null,
+  prodId:   prodItem?.id  ?? null,
+  // Pre-compute field values for both sides
+  devFields:  devItem?.fields  ?? {},
+  prodFields: prodItem?.fields ?? {},
+  // All scalar fields list
+  scalarFields: fields.map((f: any) => ({ field: f.field, type: f.type })),
+};
+
+// External page links (uses permalink first, falls back to slug)
+const siteDevBase  = SITE_DEV_URL();
+const siteProdBase = SITE_PROD_URL();
+
+function buildUrl(base: string, path: string | null | undefined): string | null {
+  if (!path) return null;
+  return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`;
+}
+
+const devPageUrl  = devItem  ? buildUrl(siteDevBase,  devItem.permalink  ?? devItem.slug)  : null;
+const prodPageUrl = prodItem ? buildUrl(siteProdBase, prodItem.permalink ?? prodItem.slug) : null;
+
+const hasBlocks       = !!blockData && (blockData.blocks?.length > 0);
+const totalBlocks     = blockData?.blocks?.length ?? 0;
+const changedBlocks   = blockData?.changedBlocks   ?? 0;
+const devOnlyBlocks   = blockData?.devOnlyBlocks   ?? 0;
+const prodOnlyBlocks  = blockData?.prodOnlyBlocks  ?? 0;
+
+function getBlockLabel(blockCollection: string): string {
+  return blockCollection
+    .replace(new RegExp(`^${collection}_`), '')
+    .replace(/_/g, ' ')
+    .split(' ')
+    .map((w: string) => w[0]?.toUpperCase() + w.slice(1))
+    .join(' ');
+}
+---
+<Layout title={`${keyValue} — ${collLabel}`} active="/content" counts={{ ...counts, contentDiffs }}>
+  <div class="banner">
+    <div>
+      <div class="breadcrumb">
+        <a href="/content">Content</a>
+        <span class="sep">›</span>
+        <a href={`/content/${collection}`}>{collLabel}</a>
+        <span class="sep">›</span>
+        <span class="key-val">{keyValue}</span>
+        <span class={`key-type-badge key-type-${keyType}`}>{keyType}</span>
+      </div>
+      <h1>{keyValue}</h1>
+      <div class="item-envs">
+        {devItem  && <span class="env-label env-dev">DEV  <code class="mono">{devItem.id}</code></span>}
+        {prodItem && <span class="env-label env-prod">PROD <code class="mono">{prodItem.id}</code></span>}
+        {devItem  && <span class={`chip chip-${devItem.status}`}>{devItem.status} (dev)</span>}
+        {prodItem && <span class={`chip chip-${prodItem.status}`}>{prodItem.status} (prod)</span>}
+        {devPageUrl  && <a href={devPageUrl}  target="_blank" rel="noopener" class="page-link page-link-dev">↗ dev page</a>}
+        {prodPageUrl && <a href={prodPageUrl} target="_blank" rel="noopener" class="page-link page-link-prod">↗ prod page</a>}
+      </div>
+    </div>
+    <a href={`/content/${collection}`} class="btn">← Back</a>
+  </div>
+
+  {itemData.error && (
+    <div class="error-banner">⚠️ {itemData.error}</div>
+  )}
+  {itemData.devError && !isDevOnly && (
+    <div class="error-banner">⚠️ Dev error: {itemData.devError}</div>
+  )}
+  {itemData.prodError && !isProdOnly && (
+    <div class="error-banner">⚠️ Prod error: {itemData.prodError}</div>
+  )}
+
+  {/* ── One-env item: no comparison, just a copy button ── */}
+  {(isDevOnly || isProdOnly) && (
+    <div class="one-env-section">
+      <div class={`one-env-banner ${isDevOnly ? 'banner-dev' : 'banner-prod'}`}>
+        {isDevOnly
+          ? '⚠️ This item exists only in DEV. It has not been pushed to prod yet.'
+          : '⚠️ This item exists only in PROD and is not present in dev.'
+        }
+      </div>
+      <div class="dir-toggle" id="dir-toggle">
+        {isDevOnly && (
+          <button class="dir-btn dir-btn-active" data-dir="dev->prod" id="dir-dev-to-prod">
+            DEV → PROD <span class="dir-hint">Push to prod</span>
+          </button>
+        )}
+        {isProdOnly && (
+          <button class="dir-btn dir-btn-active" data-dir="prod->dev" id="dir-prod-to-dev">
+            PROD → DEV <span class="dir-hint">Pull to dev</span>
+          </button>
+        )}
+      </div>
+      <div class="section-header">All Fields — will be copied to target</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 200px;">Field</th>
+              <th style="width: 80px;">Type</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fields.map((f: any) => {
+              const item: ContentItemFull | null = isDevOnly ? devItem : prodItem;
+              const val = item?.fields?.[f.field] ?? null;
+              const long = isLong(val, f.type);
+              const display = truncate(val, f.type);
+              return (
+                <tr>
+                  <td><code class="mono">{f.field}</code></td>
+                  <td><span class="type-badge">{f.type}</span></td>
+                  <td>
+                    <span class={`field-value ${f.type === 'json' ? 'field-json' : ''}`} data-full={renderValue(val, f.type)} data-truncated={long ? 'true' : 'false'}>
+                      {display}
+                    </span>
+                    {long && (
+                      <button class="expand-btn" data-expand>Show full</button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div class="apply-section">
+        <button
+          class="sync-btn"
+          id="create-btn"
+          data-action="create"
+          data-collection={collection}
+          data-match-key={itemKey}
+          data-source-id={isDevOnly ? devItem?.id : prodItem?.id}
+          data-target-id="null"
+          data-direction={isDevOnly ? 'dev->prod' : 'prod->dev'}
+        >
+          {isDevOnly ? '→ Create in PROD' : '→ Create in DEV'}
+        </button>
+        <span class="sync-status" id="create-status"></span>
+      </div>
+    </div>
+  )}
+
+  {/* ── Both envs: field-by-field diff ── */}
+  {isBoth && (
+    <div class="both-section">
+      {/* Direction toggle */}
+      <div class="dir-toggle" id="dir-toggle">
+        <button class="dir-btn dir-btn-active" data-dir="dev->prod" id="dir-dev-to-prod">
+          DEV → PROD <span class="dir-hint">Push dev to prod</span>
+        </button>
+        <button class="dir-btn" data-dir="prod->dev" id="dir-prod-to-dev">
+          PROD → DEV <span class="dir-hint">Pull prod to dev</span>
+        </button>
+      </div>
+
+      {diffs.length === 0 ? (
+        <div class="in-sync-notice">
+          ✓ All fields are in sync between dev and prod.
+        </div>
+      ) : (
+        <div class="diff-summary-bar">
+          <strong>{diffs.length}</strong> field{diffs.length !== 1 ? 's' : ''} differ between dev and prod.
+          Use the radio buttons to choose which value to keep, then click Apply.
+        </div>
+      )}
+
+      {/* Field diff table */}
+      <div class="section-header" style="margin-top: 20px;">Fields</div>
+      <div class="table-wrap">
+        <table id="fields-table">
+          <thead>
+            <tr>
+              <th style="width: 180px;">Field</th>
+              <th style="width: 70px;">Type</th>
+              <th>DEV Value</th>
+              <th>PROD Value</th>
+              {diffs.length > 0 && <th style="width: 160px; text-align: center;">Use</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {fields.map((f: any) => {
+              const isDiff   = diffFieldSet.has(f.field);
+              const diffEntry = isDiff ? diffByField.get(f.field) : null;
+              const devVal   = devItem?.fields?.[f.field]  ?? null;
+              const prodVal  = prodItem?.fields?.[f.field] ?? null;
+              const devLong  = isLong(devVal,  f.type);
+              const prodLong = isLong(prodVal, f.type);
+              return (
+                <tr class={isDiff ? 'row-diff' : 'row-sync'} data-field={f.field} data-is-diff={isDiff ? 'true' : 'false'}>
+                  <td>
+                    <code class="mono">{f.field}</code>
+                    {isDiff && <span class="diff-dot">●</span>}
+                  </td>
+                  <td><span class="type-badge">{f.type}</span></td>
+                  <td class="value-cell">
+                    {devVal === null
+                      ? <span class="null-val">null</span>
+                      : (
+                        <>
+                          <span
+                            class={`field-value ${f.type === 'json' || f.type === 'text' ? 'field-block' : ''} ${isDiff ? 'val-dev' : ''}`}
+                            data-full={renderValue(devVal, f.type)}
+                            data-short={truncate(devVal, f.type)}
+                            data-truncated={devLong ? 'true' : 'false'}
+                          >
+                            {truncate(devVal, f.type)}
+                          </span>
+                          {devLong && <button class="expand-btn" data-expand>Show full</button>}
+                        </>
+                      )
+                    }
+                  </td>
+                  <td class="value-cell">
+                    {prodVal === null
+                      ? <span class="null-val">null</span>
+                      : (
+                        <>
+                          <span
+                            class={`field-value ${f.type === 'json' || f.type === 'text' ? 'field-block' : ''} ${isDiff ? 'val-prod' : ''}`}
+                            data-full={renderValue(prodVal, f.type)}
+                            data-short={truncate(prodVal, f.type)}
+                            data-truncated={prodLong ? 'true' : 'false'}
+                          >
+                            {truncate(prodVal, f.type)}
+                          </span>
+                          {prodLong && <button class="expand-btn" data-expand>Show full</button>}
+                        </>
+                      )
+                    }
+                  </td>
+                  {diffs.length > 0 && (
+                    <td class="radio-cell" style="text-align: center;">
+                      {isDiff ? (
+                        <div class="radio-group" data-field={f.field}>
+                          <label class="radio-label">
+                            <input type="radio" name={`field-${f.field}`} value="dev" class="field-radio" data-field={f.field} data-side="dev" checked />
+                            <span class="radio-env dev">DEV</span>
+                          </label>
+                          <label class="radio-label">
+                            <input type="radio" name={`field-${f.field}`} value="prod" class="field-radio" data-field={f.field} data-side="prod" />
+                            <span class="radio-env prod">PROD</span>
+                          </label>
+                        </div>
+                      ) : (
+                        <span class="same-chip">✓ same</span>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Apply section */}
+      {diffs.length > 0 && (
+        <div class="apply-section">
+          <button class="sync-btn" id="apply-btn" data-state="idle">
+            Apply <span id="apply-count">{diffs.length}</span> field(s) →
+          </button>
+          <span class="sync-status" id="apply-status"></span>
+        </div>
+      )}
+    </div>
+  )}
+
+  {/* ── Blocks section ── */}
+  {hasBlocks && (
+    <div class="blocks-section">
+      <div class="section-header">
+        Blocks ({totalBlocks})
+        {changedBlocks  > 0 && <span class="env-badge env-badge-changed">{changedBlocks} changed</span>}
+        {devOnlyBlocks  > 0 && <span class="env-badge env-badge-dev">{devOnlyBlocks} dev only</span>}
+        {prodOnlyBlocks > 0 && <span class="env-badge env-badge-prod">{prodOnlyBlocks} prod only</span>}
+      </div>
+      {blockData?.devError  && <div class="error-banner" style="margin-bottom: 12px;">⚠️ Dev blocks error: {blockData.devError}</div>}
+      {blockData?.prodError && <div class="error-banner" style="margin-bottom: 12px;">⚠️ Prod blocks error: {blockData.prodError}</div>}
+
+      {(blockData?.blocks ?? []).map((block: BlockMatchedRow) => {
+        const blockLabel = getBlockLabel(block.dev?.blockCollection ?? block.prod?.blockCollection ?? '');
+        const blockState = block.dev && !block.prod ? 'dev-only' : !block.dev && block.prod ? 'prod-only' : block.diffs.length > 0 ? 'changed' : 'in-sync';
+        const blockDiffFields = new Map(block.diffs.map((d: any) => [d.field, d]));
+        return (
+          <details class={`block-details block-${blockState}`}>
+            <summary class="block-summary">
+              <span class="block-sort">#{block.dev?.sort ?? block.prod?.sort ?? '?'}</span>
+              <span class="block-type">{blockLabel}</span>
+              <code class="mono block-coll">{block.dev?.blockCollection ?? block.prod?.blockCollection}</code>
+              {blockState === 'changed'   && <span class="env-badge env-badge-changed">{block.diffCount} field{block.diffCount !== 1 ? 's' : ''} differ</span>}
+              {blockState === 'dev-only'  && <span class="env-badge env-badge-dev">DEV ONLY</span>}
+              {blockState === 'prod-only' && <span class="env-badge env-badge-prod">PROD ONLY</span>}
+              {blockState === 'in-sync'   && <span class="env-badge env-badge-sync">IN SYNC</span>}
+            </summary>
+            <div class="block-content">
+              {block.diffs.length > 0 ? (
+                <>
+                  <div class="table-wrap">
+                    <table class="block-table">
+                      <thead>
+                        <tr>
+                          <th style="width: 160px;">Field</th>
+                          <th>DEV Value</th>
+                          <th>PROD Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {block.diffs.map((diff: any) => {
+                          const devVal  = diff.dev;
+                          const prodVal = diff.prod;
+                          return (
+                            <tr class="row-diff">
+                              <td><code class="mono">{diff.field}</code> <span class="type-badge">{diff.fieldType}</span></td>
+                              <td class="value-cell">
+                                <span class="field-value val-dev">{truncate(devVal, diff.fieldType)}</span>
+                              </td>
+                              <td class="value-cell">
+                                <span class="field-value val-prod">{truncate(prodVal, diff.fieldType)}</span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {isBoth && (
+                    <div class="apply-section" style="margin-top: 12px;">
+                      <button
+                        class="sync-btn sync-btn-sm"
+                        data-action="block-sync"
+                        data-block-junction={blockData?.blockJunction}
+                        data-dev-block-id={block.dev?.blockId}
+                        data-prod-block-id={block.prod?.blockId}
+                        data-block-collection={block.dev?.blockCollection ?? block.prod?.blockCollection}
+                        data-diffs={JSON.stringify(block.diffs)}
+                      >
+                        Sync block →
+                      </button>
+                      <span class="sync-status block-sync-status"></span>
+                    </div>
+                  )}
+                </>
+              ) : blockState === 'in-sync' ? (
+                <div class="in-sync-notice" style="padding: 10px 0 4px;">✓ Block fields are in sync.</div>
+              ) : (
+                <div style="padding: 10px 0 4px; color: var(--color-muted); font-size: 13px;">
+                  {blockState === 'dev-only' ? 'Block exists only in dev.' : 'Block exists only in prod.'}
+                </div>
+              )}
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  )}
+</Layout>
+
+<!-- Pass server data to client script via a JSON script tag -->
+<script type="application/json" id="client-data">
+  {JSON.stringify(clientData)}
+</script>
+
+<style>
+/* ── Breadcrumb ───────────────────────────────────────────────────────────── */
+.breadcrumb { font-size: 12px; color: var(--color-muted); margin-bottom: 6px; }
+.breadcrumb a { color: var(--color-accent); }
+.breadcrumb .sep { margin: 0 6px; }
+.key-val { color: var(--color-text); }
+
+/* ── Key type badge ───────────────────────────────────────────────────────── */
+.key-type-badge {
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  padding: 1px 5px; border-radius: 5px; margin-left: 6px; vertical-align: middle;
+}
+.key-type-permalink { background: rgba(16,185,129,0.1);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.2); }
+.key-type-slug      { background: rgba(99,102,241,0.12); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.2); }
+.key-type-title     { background: rgba(251,191,36,0.1);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.2); }
+.key-type-id        { background: rgba(148,163,184,0.1); color: var(--color-muted); border: 1px solid var(--color-border); }
+
+/* ── Item env labels ──────────────────────────────────────────────────────── */
+.item-envs {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px;
+}
+.env-label {
+  font-size: 11px; font-weight: 700; padding: 2px 10px;
+  border-radius: 10px; display: inline-flex; align-items: center; gap: 5px;
+}
+.env-dev  { background: rgba(16,185,129,0.12); color: var(--color-create); border: 1px solid rgba(16,185,129,0.25); }
+.env-prod { background: rgba(99,102,241,0.12); color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.25); }
+
+/* ── External page links ──────────────────────────────────────────────────── */
+.page-link {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px;
+  text-decoration: none; transition: opacity 0.1s;
+}
+.page-link:hover { opacity: 0.75; text-decoration: underline; }
+.page-link-dev  { background: rgba(16,185,129,0.1);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.25); }
+.page-link-prod { background: rgba(99,102,241,0.12); color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.25); }
+
+/* ── Direction toggle ─────────────────────────────────────────────────────── */
+.dir-toggle {
+  display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+}
+.dir-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: var(--radius);
+  border: 2px solid var(--color-border); background: var(--color-surface);
+  color: var(--color-muted); cursor: pointer; font-size: 14px; font-weight: 600;
+  transition: all 0.15s;
+}
+.dir-btn:hover { border-color: var(--color-accent); color: var(--color-text); }
+.dir-btn-active {
+  border-color: var(--color-accent) !important;
+  background: rgba(99,102,241,0.12) !important;
+  color: #a5b4fc !important;
+}
+.dir-hint {
+  font-size: 11px; font-weight: 400; color: var(--color-muted);
+}
+
+/* ── One-env banner ───────────────────────────────────────────────────────── */
+.one-env-section { margin-bottom: 24px; }
+.one-env-banner {
+  padding: 12px 16px; border-radius: var(--radius); font-size: 13px; margin-bottom: 16px;
+}
+.banner-dev  { background: rgba(16,185,129,0.08);  border: 1px solid rgba(16,185,129,0.25); color: var(--color-create); }
+.banner-prod { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); color: var(--color-delete); }
+
+/* ── Diff summary bar ─────────────────────────────────────────────────────── */
+.diff-summary-bar {
+  padding: 10px 14px; border-radius: var(--radius); font-size: 13px;
+  background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.2);
+  color: var(--color-text); margin-bottom: 4px;
+}
+.in-sync-notice {
+  padding: 12px 16px; border-radius: var(--radius); font-size: 13px;
+  background: rgba(34,197,94,0.06); border: 1px solid rgba(34,197,94,0.2);
+  color: var(--color-success); margin-bottom: 4px;
+}
+
+/* ── Field diff table ─────────────────────────────────────────────────────── */
+.row-diff td { background: rgba(251,191,36,0.03); }
+.row-diff:hover td { background: rgba(251,191,36,0.06); }
+
+.diff-dot {
+  color: var(--color-warning); font-size: 8px; margin-left: 6px; vertical-align: middle;
+}
+
+.type-badge {
+  font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 1px 5px; border-radius: 4px; background: rgba(148,163,184,0.1);
+  color: var(--color-muted); border: 1px solid var(--color-border);
+}
+
+.value-cell { max-width: 320px; word-break: break-word; }
+
+.field-value {
+  font-family: var(--font-mono); font-size: 12px; display: block; word-break: break-word;
+}
+.field-block { white-space: pre-wrap; }
+
+.val-dev  { color: var(--color-delete); }
+.val-prod { color: var(--color-create); }
+
+.null-val { color: var(--color-muted); font-style: italic; font-size: 12px; }
+
+.expand-btn {
+  font-size: 10px; color: var(--color-accent); background: none; border: none;
+  cursor: pointer; padding: 0; margin-top: 3px; text-decoration: underline;
+}
+
+/* ── Radio group ──────────────────────────────────────────────────────────── */
+.radio-group { display: flex; gap: 10px; justify-content: center; }
+.radio-label {
+  display: flex; align-items: center; gap: 5px; cursor: pointer;
+  font-size: 11px; font-weight: 600;
+}
+.radio-label input { cursor: pointer; }
+.radio-env.dev  { color: var(--color-delete); }
+.radio-env.prod { color: var(--color-create); }
+
+.same-chip {
+  font-size: 10px; color: var(--color-muted); font-weight: 600;
+  background: rgba(148,163,184,0.1); border: 1px solid rgba(148,163,184,0.2);
+  padding: 2px 7px; border-radius: 8px; white-space: nowrap;
+}
+
+/* ── Apply section ────────────────────────────────────────────────────────── */
+.apply-section {
+  display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap;
+}
+
+.sync-btn {
+  padding: 9px 20px; border-radius: var(--radius); border: 1px solid var(--color-accent);
+  background: rgba(99,102,241,0.1); color: #a5b4fc; cursor: pointer;
+  font-size: 14px; font-weight: 600; transition: all 0.15s;
+}
+.sync-btn:hover:not(:disabled) { background: rgba(99,102,241,0.2); }
+.sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.sync-btn[data-state="loading"] { opacity: 0.6; cursor: wait; }
+.sync-btn[data-state="success"] { border-color: var(--color-success); color: var(--color-success); background: rgba(34,197,94,0.1); }
+.sync-btn[data-state="error"]   { border-color: var(--color-error);   color: var(--color-error);   background: rgba(239,68,68,0.1); }
+
+.sync-btn-sm { padding: 6px 14px; font-size: 12px; }
+
+.sync-status { font-size: 12px; color: var(--color-muted); }
+
+/* ── Blocks section ───────────────────────────────────────────────────────── */
+.blocks-section { margin-top: 32px; }
+
+.block-details {
+  border: 1px solid var(--color-border); border-radius: var(--radius);
+  margin-bottom: 8px; background: var(--color-surface);
+}
+.block-dev-only   { border-left: 3px solid var(--color-create); }
+.block-prod-only  { border-left: 3px solid var(--color-delete); }
+.block-changed    { border-left: 3px solid var(--color-warning); }
+
+.block-summary {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; cursor: pointer; user-select: none; list-style: none;
+}
+.block-summary::-webkit-details-marker { display: none; }
+.block-summary::before { content: '▶'; font-size: 10px; color: var(--color-muted); transition: transform 0.15s; }
+details[open] .block-summary::before { transform: rotate(90deg); }
+
+.block-sort {
+  font-size: 11px; font-weight: 700; color: var(--color-muted);
+  background: var(--color-border); padding: 1px 6px; border-radius: 4px;
+}
+.block-type { font-weight: 600; font-size: 14px; }
+.block-coll { font-size: 10px !important; color: var(--color-muted) !important; }
+
+.block-content { padding: 0 14px 14px; }
+
+.block-table th, .block-table td { font-size: 12px; }
+
+/* ── Env badges ───────────────────────────────────────────────────────────── */
+.env-badge {
+  display: inline-block; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.5px; text-transform: uppercase; padding: 2px 6px; border-radius: 8px;
+}
+.env-badge-dev     { background: rgba(16,185,129,0.15);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.3); }
+.env-badge-prod    { background: rgba(248,113,113,0.15); color: var(--color-delete); border: 1px solid rgba(248,113,113,0.3); }
+.env-badge-changed { background: rgba(251,191,36,0.12);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.25); }
+.env-badge-sync    { background: rgba(148,163,184,0.1);  color: var(--color-muted); border: 1px solid rgba(148,163,184,0.2); }
+
+/* ── Status chips ─────────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; padding: 3px 10px;
+  border-radius: 10px; font-size: 12px; font-weight: 600; text-transform: capitalize;
+}
+.chip-published { background: rgba(34,197,94,0.15);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.3); }
+.chip-draft     { background: rgba(251,191,36,0.15);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.3); }
+.chip-review    { background: rgba(99,102,241,0.15);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.3); }
+.chip-archived  { background: rgba(148,163,184,0.15); color: var(--color-muted);   border: 1px solid rgba(148,163,184,0.3); }
+.chip-unknown   { background: rgba(148,163,184,0.1);  color: var(--color-muted);   border: 1px solid var(--color-border); }
+
+.muted { color: var(--color-muted); font-size: 12px; }
+</style>
+
+<script>
+// ── Read server-side data ──────────────────────────────────────────────────
+interface ClientData {
+  collection: string;
+  matchKey: string;
+  devId: number | string | null;
+  prodId: number | string | null;
+  devFields: Record<string, unknown>;
+  prodFields: Record<string, unknown>;
+  scalarFields: { field: string; type: string }[];
+}
+
+const clientDataEl = document.getElementById('client-data');
+const cd: ClientData = clientDataEl ? JSON.parse(clientDataEl.textContent ?? '{}') : {} as ClientData;
+
+// ── Direction toggle ───────────────────────────────────────────────────────
+let direction: 'dev->prod' | 'prod->dev' = 'dev->prod';
+
+const dirBtns = document.querySelectorAll<HTMLButtonElement>('[data-dir]');
+dirBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    direction = btn.dataset.dir as 'dev->prod' | 'prod->dev';
+    dirBtns.forEach(b => b.classList.toggle('dir-btn-active', b === btn));
+    updateApplyBtn();
+  });
+});
+
+// ── Apply count update (changes based on direction) ────────────────────────
+function updateApplyBtn() {
+  const countEl = document.getElementById('apply-count');
+  if (!countEl) return;
+  const selected = getSelectedFields();
+  countEl.textContent = String(selected.length);
+}
+
+// ── Collect selected field values ──────────────────────────────────────────
+function getSelectedFields(): { field: string; value: unknown }[] {
+  const results: { field: string; value: unknown }[] = [];
+  const radios = document.querySelectorAll<HTMLInputElement>('.field-radio:checked');
+  radios.forEach(radio => {
+    const field = radio.dataset.field!;
+    const side  = radio.dataset.side as 'dev' | 'prod';
+    const value = side === 'dev' ? cd.devFields[field] : cd.prodFields[field];
+    results.push({ field, value: value ?? null });
+  });
+  return results;
+}
+
+// ── Listen for radio changes ───────────────────────────────────────────────
+document.querySelectorAll<HTMLInputElement>('.field-radio').forEach(radio => {
+  radio.addEventListener('change', updateApplyBtn);
+});
+
+// ── Apply button (field-by-field sync for both-env items) ──────────────────
+const applyBtn    = document.getElementById('apply-btn') as HTMLButtonElement | null;
+const applyStatus = document.getElementById('apply-status');
+
+applyBtn?.addEventListener('click', async () => {
+  const fields = getSelectedFields();
+  if (fields.length === 0) {
+    if (applyStatus) applyStatus.textContent = 'No fields selected.';
+    return;
+  }
+
+  const sourceId = direction === 'dev->prod' ? cd.devId : cd.prodId;
+  const targetId = direction === 'dev->prod' ? cd.prodId : cd.devId;
+
+  if (sourceId == null) {
+    if (applyStatus) applyStatus.textContent = 'Source item not found.';
+    return;
+  }
+
+  applyBtn.dataset.state = 'loading';
+  applyBtn.disabled = true;
+  if (applyStatus) applyStatus.textContent = '';
+
+  try {
+    const res = await fetch('/api/content-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        direction,
+        collection: cd.collection,
+        sourceId,
+        targetId,
+        fields,
+        matchKey: cd.matchKey,
+      }),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      applyBtn.dataset.state = 'success';
+      applyBtn.textContent = '✓ Applied';
+      if (applyStatus) applyStatus.textContent = 'Changes applied. Reload to see updated state.';
+    } else {
+      applyBtn.dataset.state = 'error';
+      applyBtn.disabled = false;
+      if (applyStatus) applyStatus.textContent = `Error: ${json.error ?? 'Unknown error'}`;
+    }
+  } catch (err) {
+    applyBtn.dataset.state = 'error';
+    applyBtn.disabled = false;
+    if (applyStatus) applyStatus.textContent = `Network error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+});
+
+// ── Create button (for dev-only / prod-only items) ─────────────────────────
+const createBtn    = document.getElementById('create-btn') as HTMLButtonElement | null;
+const createStatus = document.getElementById('create-status');
+
+createBtn?.addEventListener('click', async () => {
+  const dir      = createBtn.dataset.direction as 'dev->prod' | 'prod->dev';
+  const sourceId = createBtn.dataset.sourceId!;
+  const coll     = createBtn.dataset.collection!;
+  const matchKey = createBtn.dataset.matchKey!;
+
+  // Collect all scalar fields (all of them for a create)
+  const fields = cd.scalarFields.map(({ field }) => {
+    const value = dir === 'dev->prod' ? cd.devFields[field] : cd.prodFields[field];
+    return { field, value: value ?? null };
+  });
+
+  createBtn.dataset.state = 'loading';
+  createBtn.disabled = true;
+  if (createStatus) createStatus.textContent = '';
+
+  try {
+    const res = await fetch('/api/content-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        direction: dir,
+        collection: coll,
+        sourceId,
+        targetId: null,
+        fields,
+        matchKey,
+      }),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      createBtn.dataset.state = 'success';
+      createBtn.textContent = `✓ Created (id: ${json.targetId})`;
+      if (createStatus) createStatus.textContent = 'Item created. Reload to see updated state.';
+    } else {
+      createBtn.dataset.state = 'error';
+      createBtn.disabled = false;
+      if (createStatus) createStatus.textContent = `Error: ${json.error ?? 'Unknown error'}`;
+    }
+  } catch (err) {
+    createBtn.dataset.state = 'error';
+    createBtn.disabled = false;
+    if (createStatus) createStatus.textContent = `Network error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+});
+
+// ── Block sync buttons ─────────────────────────────────────────────────────
+document.querySelectorAll<HTMLButtonElement>('[data-action="block-sync"]').forEach(btn => {
+  const statusEl = btn.parentElement?.querySelector<HTMLElement>('.block-sync-status');
+
+  btn.addEventListener('click', async () => {
+    const blockCollection = btn.dataset.blockCollection!;
+    const diffsRaw        = btn.dataset.diffs ?? '[]';
+    const diffs: { field: string; fieldType: string; dev: unknown; prod: unknown }[] = JSON.parse(diffsRaw);
+
+    const devBlockId  = btn.dataset.devBlockId;
+    const prodBlockId = btn.dataset.prodBlockId;
+
+    const sourceId = direction === 'dev->prod' ? devBlockId  : prodBlockId;
+    const targetId = direction === 'dev->prod' ? prodBlockId : devBlockId;
+
+    if (!sourceId) {
+      if (statusEl) statusEl.textContent = 'Block not found in source env.';
+      return;
+    }
+
+    const fields = diffs.map(d => ({
+      field: d.field,
+      value: direction === 'dev->prod' ? d.dev : d.prod,
+    }));
+
+    btn.dataset.state = 'loading';
+    btn.disabled = true;
+    if (statusEl) statusEl.textContent = '';
+
+    try {
+      const res = await fetch('/api/content-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          direction,
+          collection: blockCollection,
+          sourceId: isNaN(Number(sourceId)) ? sourceId : Number(sourceId),
+          targetId: targetId ? (isNaN(Number(targetId)) ? targetId : Number(targetId)) : null,
+          fields,
+          matchKey: cd.matchKey,
+        }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        btn.dataset.state = 'success';
+        btn.textContent = '✓ Block synced';
+        if (statusEl) statusEl.textContent = 'Block fields applied.';
+      } else {
+        btn.dataset.state = 'error';
+        btn.disabled = false;
+        if (statusEl) statusEl.textContent = `Error: ${json.error ?? 'Unknown error'}`;
+      }
+    } catch (err) {
+      btn.dataset.state = 'error';
+      btn.disabled = false;
+      if (statusEl) statusEl.textContent = `Network error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+});
+
+// ── Expand / collapse long values ──────────────────────────────────────────
+document.querySelectorAll<HTMLButtonElement>('[data-expand]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const valueEl = btn.previousElementSibling as HTMLElement | null;
+    if (!valueEl) return;
+    const truncated = valueEl.dataset.truncated === 'true';
+    if (truncated) {
+      valueEl.textContent = valueEl.dataset.full ?? '';
+      valueEl.dataset.truncated = 'false';
+      btn.textContent = 'Show less';
+    } else {
+      valueEl.textContent = valueEl.dataset.short ?? valueEl.dataset.full ?? '';
+      valueEl.dataset.truncated = 'true';
+      btn.textContent = 'Show full';
+    }
+  });
+});
+</script>

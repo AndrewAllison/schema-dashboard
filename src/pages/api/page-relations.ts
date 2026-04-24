@@ -65,6 +65,13 @@ export const GET: APIRoute = async ({ url }) => {
 
     const allRelations: any[] = filtered.relations ?? [];
 
+    // Build field name index for resolving per-collection field lists
+    const fieldNamesByCollection = new Map<string, string[]>();
+    for (const f of (filtered.fields ?? [])) {
+      if (!fieldNamesByCollection.has(f.collection)) fieldNamesByCollection.set(f.collection, []);
+      fieldNamesByCollection.get(f.collection)!.push(f.field as string);
+    }
+
     // --- Discover M2M relations for this page collection ---
     // A relation is M2M (from the page's perspective) when:
     //   meta.one_collection = this collection   AND   meta.junction_field is set
@@ -110,9 +117,13 @@ export const GET: APIRoute = async ({ url }) => {
       };
     });
 
-    // --- Fetch page items ---
+    // --- Fetch page items (only fields that exist in this collection's schema) ---
+    const ITEM_FIELDS_WANTED = ['id', 'status', 'title', 'name', 'slug'];
+    const availableFields = fieldNamesByCollection.get(collection) ?? [];
+    const itemFields = ITEM_FIELDS_WANTED.filter(f => availableFields.includes(f));
+    if (!itemFields.includes('id')) itemFields.unshift('id');
     const itemsRes = await fetch(
-      `${base}/items/${collection}?fields=id,status,title,name,slug&limit=-1`,
+      `${base}/items/${collection}?fields=${itemFields.join(',')}&limit=-1`,
       { headers: { Authorization: `Bearer ${token}` } },
     );
     const items: any[] = itemsRes.ok ? ((await itemsRes.json()).data ?? []) : [];

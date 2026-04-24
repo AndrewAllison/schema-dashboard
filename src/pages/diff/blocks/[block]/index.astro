@@ -1,0 +1,501 @@
+---
+import Layout from '../../../../components/Layout.astro';
+import { getDiffData } from '../../../../lib/getDiffData';
+
+const { block }    = Astro.params as { block: string };
+const fromParam    = Astro.url.searchParams.get('from');
+const { counts }   = await getDiffData(Astro.url);
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface FieldInfo {
+  field: string;
+  type: string;
+  required: boolean;
+  note: string | null;
+}
+
+interface PageUsage {
+  collection: string;
+  label: string;
+  junctionCollection: string;
+  inDev: boolean;
+  inProd: boolean;
+  devUsageCount: number;
+  prodUsageCount: number;
+}
+
+interface BlockDetailData {
+  block: string;
+  label: string;
+  devFields: FieldInfo[];
+  prodFields: FieldInfo[];
+  fieldDiff: {
+    devOnly: FieldInfo[];
+    prodOnly: FieldInfo[];
+    changed: { field: string; dev: FieldInfo; prod: FieldInfo }[];
+    matched: FieldInfo[];
+  };
+  usedByPages: PageUsage[];
+  fetchedAt: number;
+  error?: string;
+  devSnapshotError?: string;
+  prodSnapshotError?: string;
+}
+
+// ── Data fetch ────────────────────────────────────────────────────────────────
+
+let data: BlockDetailData | null = null;
+let fetchError: string | undefined;
+
+try {
+  const res  = await fetch(new URL(`/api/block-detail?block=${encodeURIComponent(block)}`, Astro.url));
+  const json = await res.json();
+  if (json.error) {
+    fetchError = json.error;
+  } else {
+    data = json as BlockDetailData;
+  }
+} catch (err: unknown) {
+  fetchError = err instanceof Error ? err.message : String(err);
+}
+
+const label         = data?.label ?? block;
+const fieldDiff     = data?.fieldDiff;
+const usedByPages   = data?.usedByPages ?? [];
+const devFields     = data?.devFields ?? [];
+const prodFields    = data?.prodFields ?? [];
+const fetchedAtStr  = data?.fetchedAt ? new Date(data.fetchedAt).toLocaleString() : undefined;
+
+const inDev  = devFields.length > 0;
+const inProd = prodFields.length > 0;
+
+// Build full ordered field list for the side-by-side table
+// Order: matched + changed first (alphabetical), then devOnly, then prodOnly
+const allFieldNames = (() => {
+  if (!fieldDiff) return [];
+  const ordered: string[] = [
+    ...fieldDiff.matched.map(f => f.field),
+    ...fieldDiff.changed.map(f => f.field),
+    ...fieldDiff.devOnly.map(f => f.field),
+    ...fieldDiff.prodOnly.map(f => f.field),
+  ];
+  return ordered;
+})();
+
+const devFieldMap  = new Map((data?.devFields  ?? []).map(f => [f.field, f]));
+const prodFieldMap = new Map((data?.prodFields ?? []).map(f => [f.field, f]));
+
+type FieldRowState = 'matched' | 'changed' | 'dev-only' | 'prod-only';
+
+function getFieldState(fieldName: string): FieldRowState {
+  if (!fieldDiff) return 'matched';
+  if (fieldDiff.devOnly.some(f => f.field === fieldName))  return 'dev-only';
+  if (fieldDiff.prodOnly.some(f => f.field === fieldName)) return 'prod-only';
+  if (fieldDiff.changed.some(f => f.field === fieldName))  return 'changed';
+  return 'matched';
+}
+
+// Back link
+const backLabel = fromParam
+  ? fromParam.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  : null;
+---
+<Layout title={`Block — ${label}`} active="/diff/pages" counts={counts}>
+  <!-- Back link -->
+  {fromParam && (
+    <div class="back-link">
+      <a href={`/diff/pages/${fromParam}`} class="back-btn">
+        ← Back to {backLabel}
+      </a>
+    </div>
+  )}
+
+  <div class="banner">
+    <div>
+      <div class="breadcrumb">
+        <a href="/diff/pages">Pages</a>
+        {fromParam && (
+          <>
+            <span class="sep">›</span>
+            <a href={`/diff/pages/${fromParam}`}>{backLabel}</a>
+          </>
+        )}
+        <span class="sep">›</span>
+        <span>Block: {label}</span>
+      </div>
+      <h1>{label}</h1>
+      <div class="meta">
+        <code class="mono">{block}</code>
+        <span class={`env-badge ${inDev ? 'env-badge-dev' : 'env-badge-absent'}`}>
+          {inDev ? 'In Dev' : 'Not in Dev'}
+        </span>
+        <span class={`env-badge ${inProd ? 'env-badge-prod' : 'env-badge-absent'}`}>
+          {inProd ? 'In Prod' : 'Not in Prod'}
+        </span>
+        {fetchedAtStr && (
+          <span class="fetched-at">fetched {fetchedAtStr}</span>
+        )}
+      </div>
+    </div>
+    <a href={`/api/block-detail?block=${encodeURIComponent(block)}&refresh=true`} class="btn" id="refresh-btn">
+      ↻ Refresh
+    </a>
+  </div>
+
+  <!-- Errors -->
+  {(fetchError || data?.error) && (
+    <div class="error-banner">⚠️ {fetchError ?? data?.error}</div>
+  )}
+  {data?.devSnapshotError && (
+    <div class="error-banner">⚠️ Dev snapshot error: {data.devSnapshotError}</div>
+  )}
+  {data?.prodSnapshotError && (
+    <div class="error-banner">⚠️ Prod snapshot error: {data.prodSnapshotError}</div>
+  )}
+
+  {data && (
+    <>
+      <!-- ── Schema Fields ──────────────────────────────────────────────────── -->
+      <div class="section-header" style="margin-bottom: 12px;">
+        Schema Fields
+        <span class="field-counts">
+          {devFields.length} dev · {prodFields.length} prod
+          {fieldDiff && fieldDiff.devOnly.length > 0 && (
+            <span class="diff-count diff-count-dev">+{fieldDiff.devOnly.length} dev only</span>
+          )}
+          {fieldDiff && fieldDiff.prodOnly.length > 0 && (
+            <span class="diff-count diff-count-prod">+{fieldDiff.prodOnly.length} prod only</span>
+          )}
+          {fieldDiff && fieldDiff.changed.length > 0 && (
+            <span class="diff-count diff-count-changed">{fieldDiff.changed.length} changed</span>
+          )}
+        </span>
+      </div>
+
+      {allFieldNames.length === 0 ? (
+        <div class="empty-note">
+          No fields found for this block in either environment. The collection may not exist yet.
+        </div>
+      ) : (
+        <div class="table-wrap" style="margin-bottom: 32px;">
+          <table class="fields-table">
+            <thead>
+              <tr>
+                <th style="width: 200px;">Field</th>
+                <th colspan="2" class="env-col-header env-col-header-dev">Dev</th>
+                <th colspan="2" class="env-col-header env-col-header-prod">Prod</th>
+                <th style="width: 60px;">State</th>
+              </tr>
+              <tr class="subheader-row">
+                <th></th>
+                <th class="subth">Type</th>
+                <th class="subth">Req</th>
+                <th class="subth">Type</th>
+                <th class="subth">Req</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {allFieldNames.map((fieldName) => {
+                const state    = getFieldState(fieldName);
+                const devField  = devFieldMap.get(fieldName);
+                const prodField = prodFieldMap.get(fieldName);
+                const typeChanged = state === 'changed' && devField && prodField && devField.type !== prodField.type;
+                const reqChanged  = state === 'changed' && devField && prodField && devField.required !== prodField.required;
+                return (
+                  <tr class={`field-row field-row-${state}`}>
+                    <td>
+                      <code class="mono field-name">{fieldName}</code>
+                      {(devField?.note ?? prodField?.note) && (
+                        <div class="field-note">{devField?.note ?? prodField?.note}</div>
+                      )}
+                    </td>
+                    <!-- Dev columns -->
+                    <td class={`type-cell ${typeChanged ? 'cell-changed' : ''}`}>
+                      {devField ? (
+                        <code class="mono type-code">{devField.type}</code>
+                      ) : (
+                        <span class="absent">—</span>
+                      )}
+                    </td>
+                    <td class={`req-cell ${reqChanged ? 'cell-changed' : ''}`}>
+                      {devField ? (
+                        <span class={devField.required ? 'req-yes' : 'req-no'}>
+                          {devField.required ? 'Yes' : 'No'}
+                        </span>
+                      ) : (
+                        <span class="absent">—</span>
+                      )}
+                    </td>
+                    <!-- Prod columns -->
+                    <td class={`type-cell ${typeChanged ? 'cell-changed' : ''}`}>
+                      {prodField ? (
+                        <code class="mono type-code">{prodField.type}</code>
+                      ) : (
+                        <span class="absent">—</span>
+                      )}
+                    </td>
+                    <td class={`req-cell ${reqChanged ? 'cell-changed' : ''}`}>
+                      {prodField ? (
+                        <span class={prodField.required ? 'req-yes' : 'req-no'}>
+                          {prodField.required ? 'Yes' : 'No'}
+                        </span>
+                      ) : (
+                        <span class="absent">—</span>
+                      )}
+                    </td>
+                    <!-- State badge -->
+                    <td>
+                      {state === 'dev-only'  && <span class="field-badge field-badge-dev">Dev only</span>}
+                      {state === 'prod-only' && <span class="field-badge field-badge-prod">Prod only</span>}
+                      {state === 'changed'   && <span class="field-badge field-badge-changed">Changed</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <!-- ── Used by Pages ──────────────────────────────────────────────────── -->
+      <div class="section-header" style="margin-bottom: 12px;">
+        Used by Pages
+        <span class="field-counts">{usedByPages.length} collection{usedByPages.length !== 1 ? 's' : ''}</span>
+      </div>
+
+      {usedByPages.length === 0 ? (
+        <div class="empty-note">
+          This block type is not referenced in any page collection's allowedBlockTypes.
+        </div>
+      ) : (
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Page Collection</th>
+                <th>Junction Table</th>
+                <th class="center-col">In Dev</th>
+                <th class="center-col">In Prod</th>
+                <th class="center-col">Dev Usage</th>
+                <th class="center-col">Prod Usage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usedByPages.map((page) => (
+                <tr>
+                  <td>
+                    <a href={`/diff/pages/${page.collection}`} class="page-link">
+                      {page.label}
+                    </a>
+                    <div class="sub-code">{page.collection}</div>
+                  </td>
+                  <td>
+                    <code class="mono muted">{page.junctionCollection}</code>
+                  </td>
+                  <td class="center-col">
+                    {page.inDev
+                      ? <span class="presence-badge presence-yes">Yes</span>
+                      : <span class="presence-badge presence-no">No</span>
+                    }
+                  </td>
+                  <td class="center-col">
+                    {page.inProd
+                      ? <span class="presence-badge presence-yes">Yes</span>
+                      : <span class="presence-badge presence-no">No</span>
+                    }
+                  </td>
+                  <td class="center-col">
+                    {page.devUsageCount > 0
+                      ? <span class="usage-count usage-count-dev">{page.devUsageCount}</span>
+                      : <span class="muted">0</span>
+                    }
+                  </td>
+                  <td class="center-col">
+                    {page.prodUsageCount > 0
+                      ? <span class="usage-count usage-count-prod">{page.prodUsageCount}</span>
+                      : <span class="muted">0</span>
+                    }
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  )}
+</Layout>
+
+<style>
+/* ── Back link ────────────────────────────────────────────────────────────── */
+.back-link { margin-bottom: 8px; }
+.back-btn {
+  font-size: 12px;
+  color: var(--color-accent);
+  text-decoration: none;
+}
+.back-btn:hover { text-decoration: underline; }
+
+/* ── Breadcrumb ───────────────────────────────────────────────────────────── */
+.breadcrumb {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-bottom: 4px;
+}
+.breadcrumb a  { color: var(--color-accent); }
+.breadcrumb .sep { margin: 0 6px; }
+
+/* ── Meta row ─────────────────────────────────────────────────────────────── */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--color-muted);
+}
+.fetched-at { font-size: 11px; color: var(--color-muted); }
+
+/* ── Env badges (header) ──────────────────────────────────────────────────── */
+.env-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 8px;
+}
+.env-badge-dev    { background: rgba(16,185,129,0.15);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.3); }
+.env-badge-prod   { background: rgba(99,102,241,0.12);  color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.25); }
+.env-badge-absent { background: rgba(148,163,184,0.1);  color: var(--color-muted);  border: 1px solid var(--color-border); }
+
+/* ── Field counts inline ──────────────────────────────────────────────────── */
+.field-counts {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-muted);
+  margin-left: 8px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.diff-count {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+.diff-count-dev     { background: rgba(16,185,129,0.12); color: var(--color-create); border: 1px solid rgba(16,185,129,0.25); }
+.diff-count-prod    { background: rgba(248,113,113,0.12); color: var(--color-delete); border: 1px solid rgba(248,113,113,0.25); }
+.diff-count-changed { background: rgba(251,191,36,0.12); color: var(--color-warning); border: 1px solid rgba(251,191,36,0.25); }
+
+/* ── Fields table ─────────────────────────────────────────────────────────── */
+.fields-table { width: 100%; }
+
+.env-col-header {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 6px 8px;
+}
+.env-col-header-dev  { color: var(--color-create);  background: rgba(16,185,129,0.05); border-bottom: 1px solid rgba(16,185,129,0.2); }
+.env-col-header-prod { color: #a5b4fc; background: rgba(99,102,241,0.05); border-bottom: 1px solid rgba(99,102,241,0.2); }
+
+.subheader-row th { padding: 4px 8px; }
+.subth {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+}
+
+/* Field row states */
+.field-row-dev-only  td { background: rgba(16,185,129,0.06); }
+.field-row-prod-only td { background: rgba(248,113,113,0.06); }
+.field-row-changed   td { background: rgba(251,191,36,0.04); }
+
+.cell-changed { background: rgba(251,191,36,0.12) !important; }
+
+.field-name { font-size: 12px; }
+.field-note { font-size: 11px; color: var(--color-muted); margin-top: 2px; font-style: italic; }
+
+.type-cell, .req-cell { text-align: center; }
+.type-code { font-size: 11px; color: var(--color-muted); }
+
+.req-yes { font-size: 11px; color: var(--color-warning); font-weight: 600; }
+.req-no  { font-size: 11px; color: var(--color-muted); }
+.absent  { color: var(--color-muted); font-size: 16px; }
+
+/* Field badges */
+.field-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.field-badge-dev     { background: rgba(16,185,129,0.15);  color: var(--color-create);  border: 1px solid rgba(16,185,129,0.3); }
+.field-badge-prod    { background: rgba(248,113,113,0.15); color: var(--color-delete);  border: 1px solid rgba(248,113,113,0.3); }
+.field-badge-changed { background: rgba(251,191,36,0.12);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.25); }
+
+/* ── Used by Pages table ──────────────────────────────────────────────────── */
+.page-link { font-weight: 600; color: var(--color-accent); text-decoration: none; }
+.page-link:hover { text-decoration: underline; }
+.sub-code { font-family: var(--font-mono); font-size: 10px; color: var(--color-muted); margin-top: 2px; }
+
+.center-col { text-align: center; }
+
+.presence-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 8px;
+}
+.presence-yes { background: rgba(34,197,94,0.12);  color: var(--color-success); border: 1px solid rgba(34,197,94,0.25); }
+.presence-no  { background: rgba(148,163,184,0.1); color: var(--color-muted);   border: 1px solid var(--color-border); }
+
+.usage-count {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+.usage-count-dev  { background: rgba(16,185,129,0.12); color: var(--color-create); border: 1px solid rgba(16,185,129,0.25); }
+.usage-count-prod { background: rgba(99,102,241,0.12); color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.25); }
+
+/* ── Misc ─────────────────────────────────────────────────────────────────── */
+.empty-note {
+  padding: 24px;
+  color: var(--color-muted);
+  font-size: 13px;
+  font-style: italic;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 32px;
+  text-align: center;
+}
+.muted { color: var(--color-muted); font-size: 12px; }
+</style>
+
+<script>
+document.getElementById('refresh-btn')?.addEventListener('click', async (e) => {
+  e.preventDefault();
+  const btn = e.currentTarget as HTMLAnchorElement;
+  btn.textContent = 'Refreshing…';
+  const block = new URL(window.location.href).pathname.split('/').pop() ?? '';
+  await fetch(`/api/block-detail?block=${encodeURIComponent(block)}&refresh=true`);
+  location.reload();
+});
+</script>

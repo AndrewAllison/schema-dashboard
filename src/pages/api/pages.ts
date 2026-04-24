@@ -8,6 +8,7 @@ interface PageItem {
   id: number | string;
   status: string;
   title: string;
+  permalink: string | null;
   slug: string | null;
 }
 
@@ -51,11 +52,13 @@ export const GET: APIRoute = async ({ url }) => {
     const snapshot = await fetchSnapshot(base, token);
     const filtered = filterSnapshot(snapshot, prefix);
 
-    // Index fields by collection
-    const fieldsByCollection = new Map<string, any[]>();
+    const ITEM_FIELDS_WANTED = ['id', 'status', 'title', 'name', 'permalink', 'slug'];
+
+    // Index field names by collection
+    const fieldsByCollection = new Map<string, string[]>();
     for (const f of (filtered.fields ?? [])) {
       if (!fieldsByCollection.has(f.collection)) fieldsByCollection.set(f.collection, []);
-      fieldsByCollection.get(f.collection)!.push(f);
+      fieldsByCollection.get(f.collection)!.push(f.field as string);
     }
 
     // 2. Detect page collections: have a `status` field, not a junction/block-type table
@@ -68,7 +71,7 @@ export const GET: APIRoute = async ({ url }) => {
         if (/_blocks_/.test(name))  return false;
         // Must have a status field
         const fields = fieldsByCollection.get(name) ?? [];
-        return fields.some((f: any) => f.field === 'status');
+        return fields.includes('status');
       })
       .map((c: any) => c.collection as string);
 
@@ -96,9 +99,12 @@ export const GET: APIRoute = async ({ url }) => {
     const pageCollections = await Promise.all(
       pageCollectionNames.map(async (collectionName): Promise<PageCollectionResult> => {
         try {
-          // Fetch with lightweight field selection; Directus silently omits missing fields
+          // Build field list from only the fields that exist in this collection's schema
+          const available = fieldsByCollection.get(collectionName) ?? [];
+          const fields = ITEM_FIELDS_WANTED.filter(f => available.includes(f));
+          if (!fields.includes('id')) fields.unshift('id');
           const res = await fetch(
-            `${base}/items/${collectionName}?fields=id,status,title,name,slug&limit=-1`,
+            `${base}/items/${collectionName}?fields=${fields.join(',')}&limit=-1`,
             { headers: { Authorization: `Bearer ${token}` } },
           );
 
@@ -141,7 +147,8 @@ export const GET: APIRoute = async ({ url }) => {
             items: items.map((item: any): PageItem => ({
               id: item.id,
               status: item.status ?? 'unknown',
-              title: item.title ?? item.name ?? item.slug ?? `#${item.id}`,
+              title: item.title ?? item.name ?? item.permalink ?? item.slug ?? `#${item.id}`,
+              permalink: item.permalink ?? null,
               slug: item.slug ?? null,
             })),
           };

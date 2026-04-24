@@ -714,6 +714,29 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 
   // ── Node search highlight (graph) / filter (table) ───────────────────────
+  function focusNode(node) {
+    cy.elements().removeClass('faded highlighted');
+    node.addClass('highlighted');
+    node.connectedEdges().addClass('highlighted');
+    node.neighborhood('node').forEach(n => n.addClass('highlighted'));
+    cy.elements()
+      .not(node)
+      .not(node.connectedEdges())
+      .not(node.neighborhood('node'))
+      .addClass('faded');
+    renderInfoPanel(node);
+    cy.animate(
+      { center: { eles: node }, zoom: Math.max(cy.zoom(), 1.5) },
+      { duration: 400, easing: 'ease-in-out-cubic' }
+    );
+  }
+
+  function getSearchMatches(q) {
+    return cy.nodes().filter(n =>
+      n.data('label').toLowerCase().includes(q) || n.data('fullName').toLowerCase().includes(q)
+    );
+  }
+
   document.getElementById('node-search').addEventListener('input', function () {
     const q = this.value.trim().toLowerCase();
     if (currentView === 'table') {
@@ -721,11 +744,13 @@ document.addEventListener('DOMContentLoaded', function () {
       return;
     }
     cy.elements().removeClass('faded highlighted');
+    infoPanel.style.display = 'none';
+    infoPanel.innerHTML = '<div class="info-placeholder">Click a node to see details</div>';
     if (!q) return;
-    const matches = cy.nodes().filter(n =>
-      n.data('label').toLowerCase().includes(q) || n.data('fullName').toLowerCase().includes(q)
-    );
-    if (matches.length) {
+    const matches = getSearchMatches(q);
+    if (matches.length === 1) {
+      focusNode(matches[0]);
+    } else if (matches.length > 1) {
       cy.elements().addClass('faded');
       matches.forEach(n => {
         n.removeClass('faded').addClass('highlighted');
@@ -733,6 +758,14 @@ document.addEventListener('DOMContentLoaded', function () {
         n.neighborhood('node').removeClass('faded');
       });
     }
+  });
+
+  document.getElementById('node-search').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' || currentView === 'table') return;
+    const q = this.value.trim().toLowerCase();
+    if (!q) return;
+    const matches = getSearchMatches(q);
+    if (matches.length) focusNode(matches[0]);
   });
 
   // ── Table view ────────────────────────────────────────────────────────────

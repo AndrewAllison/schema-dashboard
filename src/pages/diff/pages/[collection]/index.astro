@@ -1,17 +1,18 @@
 ---
 import Layout from '../../../../components/Layout.astro';
 import { getDiffData } from '../../../../lib/getDiffData';
+import { SITE_DEV_URL, SITE_PROD_URL } from '../../../../lib/env';
 
 const { collection } = Astro.params as { collection: string };
 const { counts }     = await getDiffData(Astro.url);
 
-const res  = await fetch(new URL('/api/pages', Astro.url));
-const data = await res.json();
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface PageItem {
   id: number | string;
   status: string;
   title: string;
+  permalink: string | null;
   slug: string | null;
 }
 
@@ -27,21 +28,108 @@ interface PageCollection {
   error?: string;
 }
 
-const allCollections: PageCollection[] = data.pageCollections ?? [];
-const coll = allCollections.find(c => c.collection === collection);
+interface PageItemDetail {
+  id: number | string;
+  status: string;
+  title: string;
+  permalink: string | null;
+  slug: string | null;
+  blockCount: number;
+}
 
-const notFound      = !coll;
-const label         = coll?.label ?? collection;
-const items         = coll?.items ?? [];
+interface ItemDiff {
+  field: string;
+  dev: string | null;
+  prod: string | null;
+}
+
+interface MatchedRow {
+  matchKey: string;
+  matchKeyType: 'permalink' | 'slug' | 'title' | 'id';
+  dev: PageItemDetail | null;
+  prod: PageItemDetail | null;
+  diffs: ItemDiff[];
+}
+
+/** Build a full URL from a site base and a path value.
+ *  permalink fields start with '/' already; slug fields don't. */
+function buildUrl(base: string, path: string | null): string | null {
+  if (!path) return null;
+  return path.startsWith('/') ? `${base}${path}` : `${base}/${path}`;
+}
+
+/** Return the best path value for an item (permalink preferred, slug fallback). */
+function itemPath(item: PageItemDetail | PageItem | null): string | null {
+  if (!item) return null;
+  return item.permalink ?? item.slug ?? null;
+}
+
+interface MatchedCollection {
+  collection: string;
+  rows: MatchedRow[];
+  devTotal: number;
+  prodTotal: number;
+  devOnlyCount: number;
+  prodOnlyCount: number;
+  changedCount: number;
+  allowedBlockTypes: string[];
+  blockJunction: string | null;
+}
+
+// ── Data fetching ─────────────────────────────────────────────────────────────
+
+const [pagesRes, diffRes] = await Promise.allSettled([
+  fetch(new URL('/api/pages', Astro.url)).then(r => r.json()),
+  fetch(new URL('/api/pages-diff', Astro.url)).then(r => r.json()),
+]);
+
+const pagesData = pagesRes.status === 'fulfilled' ? pagesRes.value : {};
+const diffData  = diffRes.status  === 'fulfilled' ? diffRes.value  : {};
+
+const allCollections: PageCollection[]  = pagesData.pageCollections ?? [];
+const matchedColls:   MatchedCollection[] = diffData.matched ?? [];
+
+const coll     = allCollections.find(c => c.collection === collection);
+const diffColl = matchedColls.find(c => c.collection === collection);
+
+const notFound          = !coll;
+const label             = coll?.label ?? collection;
 const statusBreakdown   = coll?.statusBreakdown ?? {};
-const allowedBlockTypes = coll?.allowedBlockTypes ?? [];
-const blockJunction     = coll?.blockJunction ?? null;
+const allowedBlockTypes = coll?.allowedBlockTypes ?? diffColl?.allowedBlockTypes ?? [];
+const blockJunction     = coll?.blockJunction     ?? diffColl?.blockJunction     ?? null;
+
+// Diff rows for the toggle table
+const diffRows: MatchedRow[] = diffColl?.rows ?? [];
+const hasDiffData = diffRows.length > 0;
+
+// Counts for the toggle badges
+const devOnlyCount  = diffColl?.devOnlyCount  ?? 0;
+const prodOnlyCount = diffColl?.prodOnlyCount ?? 0;
+const changedCount  = diffColl?.changedCount  ?? 0;
+const devTotal      = diffColl?.devTotal      ?? 0;
+const prodTotal     = diffColl?.prodTotal     ?? 0;
+
+// Fallback: if no diff data, use prod-only items
+const fallbackItems: PageItem[] = coll?.items ?? [];
 
 const statusOrder = ['published', 'draft', 'review', 'archived', 'unknown'];
 const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
   return (statusOrder.indexOf(a) === -1 ? 99 : statusOrder.indexOf(a))
        - (statusOrder.indexOf(b) === -1 ? 99 : statusOrder.indexOf(b));
 });
+
+// Site base URLs for permalinks
+const siteDevBase  = SITE_DEV_URL();
+const siteProdBase = SITE_PROD_URL();
+
+// Annotate each diff row with its env state
+type EnvState = 'dev-only' | 'prod-only' | 'both' | 'changed';
+function getEnvState(row: MatchedRow): EnvState {
+  if (row.dev && !row.prod)                         return 'dev-only';
+  if (row.prod && !row.dev)                         return 'prod-only';
+  if (row.dev && row.prod && row.diffs.length > 0)  return 'changed';
+  return 'both';
+}
 ---
 <Layout title={`Pages — ${label}`} active="/diff/pages" counts={counts}>
   <div class="banner">
@@ -54,7 +142,13 @@ const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
       <h1>{label}</h1>
       <div class="meta">
         <code class="mono">{collection}</code>
-        {coll && ` · ${coll.totalItems} item(s)`}
+        {hasDiffData && (
+          <>
+            <span class="env-count env-count-dev">DEV {devTotal}</span>
+            <span class="env-count env-count-prod">PROD {prodTotal}</span>
+          </>
+        )}
+        {!hasDiffData && coll && ` · ${coll.totalItems} item(s)`}
       </div>
     </div>
     <a href={`/diff/pages/${collection}/relations`} class="btn">
@@ -75,7 +169,7 @@ const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
 
   {!notFound && (
     <>
-      <!-- Status breakdown pills -->
+      <!-- Status breakdown pills (prod) -->
       {sortedStatuses.length > 0 && (
         <div class="status-row">
           {sortedStatuses.map(([status, count]) => (
@@ -86,10 +180,10 @@ const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
         </div>
       )}
 
-      <!-- Block types (if this collection uses a builder) -->
+      <!-- Block types grid -->
       {allowedBlockTypes.length > 0 && (
         <div class="block-section">
-          <div class="section-header" style="margin-bottom: 8px;">
+          <div class="section-header" style="margin-bottom: 12px;">
             Block Types ({allowedBlockTypes.length})
             {blockJunction && (
               <span style="font-size: 11px; color: var(--color-muted); margin-left: 8px; font-weight: 400;">
@@ -97,77 +191,232 @@ const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
               </span>
             )}
           </div>
-          <div class="block-tags">
-            {allowedBlockTypes.map((bt) => (
-              <code class="mono">{bt}</code>
-            ))}
+          <div class="block-grid">
+            {allowedBlockTypes.map((bt) => {
+              const shortName = bt.replace(new RegExp(`^${collection}_`), '').replace(/_/g, ' ');
+              const shortNameCapitalized = shortName
+                .split(' ')
+                .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+                .join(' ');
+              return (
+                <a
+                  href={`/diff/blocks/${bt}?from=${collection}`}
+                  class="block-card"
+                  title={bt}
+                >
+                  <span class="block-card-name">{shortNameCapitalized}</span>
+                  <code class="mono block-card-code">{bt}</code>
+                </a>
+              );
+            })}
           </div>
         </div>
       )}
 
-      <!-- Empty state -->
-      {items.length === 0 && (
-        <div class="empty-state">
-          <div class="empty-icon">📭</div>
-          <div class="empty-msg">No content items found in <strong>{label}</strong></div>
-          <div class="empty-sub">
-            This collection exists in the schema but has no items yet.
-            Migration for this section may not have started.
+      <!-- Items table: with dev/prod toggle if diff data is available -->
+      {hasDiffData ? (
+        <div class="items-section">
+          <div class="items-header">
+            <span class="section-header" style="margin-bottom: 0;">
+              {label} ({diffRows.length} item{diffRows.length !== 1 ? 's' : ''})
+            </span>
+            <!-- Env filter toggle -->
+            <div class="env-toggle" id="env-toggle">
+              <button class="toggle-btn toggle-btn-active" data-filter="all">
+                All ({diffRows.length})
+              </button>
+              <button class="toggle-btn toggle-btn-dev" data-filter="dev-only" disabled={devOnlyCount === 0}>
+                Dev Only ({devOnlyCount})
+              </button>
+              <button class="toggle-btn toggle-btn-prod" data-filter="prod-only" disabled={prodOnlyCount === 0}>
+                Prod Only ({prodOnlyCount})
+              </button>
+              <button class="toggle-btn toggle-btn-both" data-filter="both">
+                Both ({diffRows.length - devOnlyCount - prodOnlyCount - changedCount})
+              </button>
+              {changedCount > 0 && (
+                <button class="toggle-btn toggle-btn-changed" data-filter="changed">
+                  Changed ({changedCount})
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
 
-      <!-- Items table -->
-      {items.length > 0 && (
-        <div data-section-search>
-          <div class="section-header">{label} ({items.length} item{items.length !== 1 ? 's' : ''})</div>
-          <div class="section-search-bar">
-            <label class="visually-hidden" for="items-search">Search items</label>
-            <input
-              type="search"
-              id="items-search"
-              class="section-search-input"
-              placeholder="Fuzzy search title, slug, ID…"
-              autocomplete="off"
-            />
-            <span class="section-search-count" aria-live="polite"></span>
-          </div>
-          <div class="table-wrap">
-            <table>
+          <div class="table-wrap" id="diff-table-wrap">
+            <table id="diff-items-table">
               <thead>
                 <tr>
                   <th style="width: 80px;">ID</th>
                   <th>Title / Name</th>
-                  <th>Slug</th>
+                  <th>Permalink</th>
                   <th style="width: 110px;">Status</th>
+                  <th style="width: 100px;">Env</th>
                 </tr>
               </thead>
               <tbody>
-                {items.map((item) => (
-                  <tr data-search={`${item.id} ${item.title ?? ''} ${item.slug ?? ''}`.toLowerCase()}>
-                    <td><code class="mono" style="color: var(--color-muted)">{item.id}</code></td>
-                    <td class="search-hl-target">{item.title}</td>
-                    <td>
-                      {item.slug
-                        ? <code class="mono" style="color: var(--color-muted)">{item.slug}</code>
-                        : <span class="muted">—</span>
-                      }
-                    </td>
-                    <td>
-                      <span class={`chip chip-${item.status}`}>{item.status}</span>
-                    </td>
-                  </tr>
-                ))}
+                {diffRows.map((row) => {
+                  const state = getEnvState(row);
+                  const item = row.prod ?? row.dev!;
+                  const showStatusDiff = state === 'changed' && row.diffs.some(d => d.field === 'status');
+                  const statusDiff = showStatusDiff ? row.diffs.find(d => d.field === 'status') : null;
+                  // Use permalink field primarily, slug as fallback
+                  const pathDiff   = state === 'changed'
+                    ? row.diffs.find(d => d.field === 'permalink' || d.field === 'slug')
+                    : null;
+                  const devPath    = itemPath(row.dev);
+                  const prodPath   = itemPath(row.prod);
+                  return (
+                    <tr data-env={state} class={`row-${state}`}>
+                      <td>
+                        <code class="mono muted">{item.id}</code>
+                      </td>
+                      <td>
+                        <span class="item-title">{item.title}</span>
+                        {state === 'changed' && row.diffs.some(d => d.field === 'title') && (
+                          <div class="diff-hint">
+                            {row.diffs.filter(d => d.field === 'title').map(d => (
+                              <span>
+                                <span class="diff-val-dev">{d.dev ?? '—'}</span>
+                                <span class="diff-arrow">→</span>
+                                <span class="diff-val-prod">{d.prod ?? '—'}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {pathDiff ? (
+                          /* Path changed between envs — show each with its own link */
+                          <div class="slug-cell">
+                            <div class="slug-line">
+                              <span class="env-pill env-pill-dev">dev</span>
+                              {pathDiff.dev
+                                ? <><code class="mono muted">{pathDiff.dev}</code>{buildUrl(siteDevBase, pathDiff.dev) && <a href={buildUrl(siteDevBase, pathDiff.dev)!} target="_blank" rel="noopener" class="perma-link perma-link-dev" title={buildUrl(siteDevBase, pathDiff.dev)!}>↗</a>}</>
+                                : <span class="muted">—</span>
+                              }
+                            </div>
+                            <div class="slug-line">
+                              <span class="env-pill env-pill-prod">prod</span>
+                              {pathDiff.prod
+                                ? <><code class="mono muted">{pathDiff.prod}</code>{buildUrl(siteProdBase, pathDiff.prod) && <a href={buildUrl(siteProdBase, pathDiff.prod)!} target="_blank" rel="noopener" class="perma-link perma-link-prod" title={buildUrl(siteProdBase, pathDiff.prod)!}>↗</a>}</>
+                                : <span class="muted">—</span>
+                              }
+                            </div>
+                          </div>
+                        ) : itemPath(item) ? (
+                          /* Same path in both (or single-env) — show code + env-specific links */
+                          <div class="slug-cell">
+                            <code class="mono muted">{itemPath(item)}</code>
+                            <div class="perma-links">
+                              {(state === 'dev-only' || state === 'both' || state === 'changed') && devPath && (
+                                <a href={buildUrl(siteDevBase, devPath)!} target="_blank" rel="noopener" class="perma-link perma-link-dev" title={buildUrl(siteDevBase, devPath)!}>↗ dev</a>
+                              )}
+                              {(state === 'prod-only' || state === 'both' || state === 'changed') && prodPath && (
+                                <a href={buildUrl(siteProdBase, prodPath)!} target="_blank" rel="noopener" class="perma-link perma-link-prod" title={buildUrl(siteProdBase, prodPath)!}>↗ prod</a>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <span class="muted">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {statusDiff ? (
+                          <span class="status-diff">
+                            <span class={`chip chip-${statusDiff.dev ?? 'unknown'}`}>{statusDiff.dev ?? '?'}</span>
+                            <span class="diff-arrow">→</span>
+                            <span class={`chip chip-${statusDiff.prod ?? 'unknown'}`}>{statusDiff.prod ?? '?'}</span>
+                          </span>
+                        ) : (
+                          <span class={`chip chip-${item.status}`}>{item.status}</span>
+                        )}
+                      </td>
+                      <td>
+                        {state === 'dev-only'  && <span class="env-badge env-badge-dev">DEV</span>}
+                        {state === 'prod-only' && <span class="env-badge env-badge-prod">PROD</span>}
+                        {state === 'both'      && <span class="env-badge env-badge-both">BOTH</span>}
+                        {state === 'changed'   && <span class="env-badge env-badge-changed">CHANGED</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          <p id="no-rows-msg" class="no-rows-msg" style="display:none">
+            No items match the selected filter.
+          </p>
         </div>
+      ) : (
+        <>
+          <!-- Fallback: prod-only items table -->
+          {fallbackItems.length === 0 ? (
+            <div class="empty-state">
+              <div class="empty-icon">📭</div>
+              <div class="empty-msg">No content items found in <strong>{label}</strong></div>
+              <div class="empty-sub">
+                This collection exists in the schema but has no items yet.
+                Migration for this section may not have started.
+              </div>
+            </div>
+          ) : (
+            <div data-section-search>
+              <div class="section-header">{label} ({fallbackItems.length} item{fallbackItems.length !== 1 ? 's' : ''})</div>
+              <div class="section-search-bar">
+                <label class="visually-hidden" for="items-search">Search items</label>
+                <input
+                  type="search"
+                  id="items-search"
+                  class="section-search-input"
+                  placeholder="Fuzzy search title, slug, ID…"
+                  autocomplete="off"
+                />
+                <span class="section-search-count" aria-live="polite"></span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width: 80px;">ID</th>
+                      <th>Title / Name</th>
+                      <th>Permalink</th>
+                      <th style="width: 110px;">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fallbackItems.map((item) => (
+                      <tr data-search={`${item.id} ${item.title ?? ''} ${item.slug ?? ''}`.toLowerCase()}>
+                        <td><code class="mono muted">{item.id}</code></td>
+                        <td class="search-hl-target">{item.title}</td>
+                        <td>
+                          {itemPath(item)
+                            ? <div class="slug-cell">
+                                <code class="mono muted">{itemPath(item)}</code>
+                                <div class="perma-links">
+                                  <a href={buildUrl(siteProdBase, itemPath(item))!} target="_blank" rel="noopener" class="perma-link perma-link-prod" title={buildUrl(siteProdBase, itemPath(item))!}>↗ prod</a>
+                                </div>
+                              </div>
+                            : <span class="muted">—</span>
+                          }
+                        </td>
+                        <td>
+                          <span class={`chip chip-${item.status}`}>{item.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </>
   )}
 </Layout>
 
 <style>
+/* ── Breadcrumb ───────────────────────────────────────────────────────────── */
 .breadcrumb {
   font-size: 12px;
   color: var(--color-muted);
@@ -176,6 +425,26 @@ const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
 .breadcrumb a { color: var(--color-accent); }
 .breadcrumb .sep { margin: 0 6px; }
 
+/* ── Meta env counts ──────────────────────────────────────────────────────── */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--color-muted);
+}
+.env-count {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.env-count-dev  { background: rgba(16,185,129,0.12); color: var(--color-create);  border: 1px solid rgba(16,185,129,0.25); }
+.env-count-prod { background: rgba(99,102,241,0.12);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.25); }
+
+/* ── Status row ───────────────────────────────────────────────────────────── */
 .status-row {
   display: flex;
   gap: 10px;
@@ -183,25 +452,134 @@ const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
   margin-bottom: 24px;
 }
 
-.block-section { margin-bottom: 24px; }
-.block-tags {
-  display: flex;
-  flex-wrap: wrap;
+/* ── Block grid ───────────────────────────────────────────────────────────── */
+.block-section { margin-bottom: 28px; }
+
+.block-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 8px;
-  margin-top: 8px;
 }
 
-.empty-state {
-  text-align: center;
-  padding: 48px 24px;
-  border: 1px dashed var(--color-border);
+.block-card {
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  margin-top: 24px;
+  background: var(--color-surface);
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: border-color 0.1s, background 0.1s;
 }
-.empty-icon { font-size: 36px; margin-bottom: 12px; }
-.empty-msg  { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
-.empty-sub  { font-size: 13px; color: var(--color-muted); max-width: 400px; margin: 0 auto; }
+.block-card:hover {
+  border-color: var(--color-accent);
+  background: rgba(99,102,241,0.05);
+}
+.block-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.block-card-code {
+  font-size: 10px;
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
+/* ── Items section ────────────────────────────────────────────────────────── */
+.items-section { margin-top: 0; }
+
+.items-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+/* ── Env toggle ───────────────────────────────────────────────────────────── */
+.env-toggle {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.toggle-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.toggle-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+.toggle-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.toggle-btn-active,
+.toggle-btn.is-active {
+  background: rgba(99,102,241,0.15);
+  border-color: rgba(99,102,241,0.4);
+  color: #a5b4fc;
+}
+.toggle-btn-dev.is-active   { background: rgba(16,185,129,0.12); border-color: rgba(16,185,129,0.35); color: var(--color-create); }
+.toggle-btn-prod.is-active  { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.35); color: var(--color-delete); }
+.toggle-btn-both.is-active  { background: rgba(99,102,241,0.12); border-color: rgba(99,102,241,0.3); color: #a5b4fc; }
+.toggle-btn-changed.is-active { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.3); color: var(--color-warning); }
+
+/* ── Diff table rows ──────────────────────────────────────────────────────── */
+.row-dev-only  td { background: rgba(16,185,129,0.05); }
+.row-prod-only td { background: rgba(248,113,113,0.05); }
+.row-changed   td { background: rgba(251,191,36,0.04); }
+
+/* ── Env badges ───────────────────────────────────────────────────────────── */
+.env-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+.env-badge-dev     { background: rgba(16,185,129,0.15);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.3); }
+.env-badge-prod    { background: rgba(248,113,113,0.15); color: var(--color-delete); border: 1px solid rgba(248,113,113,0.3); }
+.env-badge-both    { background: rgba(99,102,241,0.12);  color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.25); }
+.env-badge-changed { background: rgba(251,191,36,0.12);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.25); }
+
+/* ── Diff hints inside cells ──────────────────────────────────────────────── */
+.diff-hint {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 3px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.diff-val-dev  { color: var(--color-delete); font-family: var(--font-mono); }
+.diff-val-prod { color: var(--color-create); font-family: var(--font-mono); }
+.diff-arrow    { color: var(--color-muted); }
+
+/* ── Status diff inline ───────────────────────────────────────────────────── */
+.status-diff {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* ── Status chips ─────────────────────────────────────────────────────────── */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -217,5 +595,114 @@ const sortedStatuses = Object.entries(statusBreakdown).sort(([a], [b]) => {
 .chip-archived  { background: rgba(148,163,184,0.15); color: var(--color-muted);   border: 1px solid rgba(148,163,184,0.3); }
 .chip-unknown   { background: rgba(148,163,184,0.1);  color: var(--color-muted);   border: 1px solid var(--color-border); }
 
-.muted { color: var(--color-muted); font-size: 12px; }
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+  margin-top: 24px;
+}
+.empty-icon { font-size: 36px; margin-bottom: 12px; }
+.empty-msg  { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+.empty-sub  { font-size: 13px; color: var(--color-muted); max-width: 400px; margin: 0 auto; }
+
+/* ── Permalink links ──────────────────────────────────────────────────────── */
+.slug-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.perma-links {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.perma-link {
+  font-size: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.perma-link:hover { text-decoration: underline; }
+.perma-link-dev  { background: rgba(16,185,129,0.1);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.25); }
+.perma-link-prod { background: rgba(99,102,241,0.1);  color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.2); }
+
+/* Slug diff lines (when slug changed between envs) */
+.slug-line {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.env-pill {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+.env-pill-dev  { background: rgba(16,185,129,0.12); color: var(--color-create); border: 1px solid rgba(16,185,129,0.2); }
+.env-pill-prod { background: rgba(99,102,241,0.1);  color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.2); }
+
+/* ── Misc ─────────────────────────────────────────────────────────────────── */
+.muted       { color: var(--color-muted); font-size: 12px; }
+.item-title  { font-weight: 500; }
+.no-rows-msg {
+  text-align: center;
+  padding: 24px;
+  color: var(--color-muted);
+  font-size: 13px;
+  font-style: italic;
+}
 </style>
+
+<script>
+// ── Env filter toggle ─────────────────────────────────────────────────────
+const toggleContainer = document.getElementById('env-toggle');
+const table           = document.getElementById('diff-items-table');
+const noRowsMsg       = document.getElementById('no-rows-msg');
+
+if (toggleContainer && table) {
+  const buttons = Array.from(toggleContainer.querySelectorAll<HTMLButtonElement>('.toggle-btn'));
+
+  function applyFilter(filter: string) {
+    // Update active button
+    buttons.forEach(btn => {
+      btn.classList.toggle('is-active', btn.dataset.filter === filter);
+      btn.classList.remove('toggle-btn-active'); // remove the SSR default class
+    });
+
+    const rows = Array.from(table!.querySelectorAll<HTMLTableRowElement>('tbody tr'));
+    let visible = 0;
+
+    rows.forEach(row => {
+      const env = row.dataset.env ?? '';
+      const show = filter === 'all' || env === filter;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+
+    if (noRowsMsg) {
+      noRowsMsg.style.display = visible === 0 ? '' : 'none';
+    }
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!btn.disabled) applyFilter(btn.dataset.filter ?? 'all');
+    });
+  });
+
+  // Set initial active state on the "All" button
+  const allBtn = buttons.find(b => b.dataset.filter === 'all');
+  if (allBtn) {
+    allBtn.classList.add('is-active');
+    allBtn.classList.remove('toggle-btn-active');
+  }
+}
+</script>

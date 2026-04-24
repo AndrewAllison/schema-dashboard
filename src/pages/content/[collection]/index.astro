@@ -1,0 +1,319 @@
+---
+import Layout from '../../../components/Layout.astro';
+import { getDiffData } from '../../../lib/getDiffData';
+import type { ContentDiffData, ContentMatchedCollection, ContentMatchedRow } from '../../api/content-diff';
+
+const { collection } = Astro.params as { collection: string };
+const { counts }     = await getDiffData(Astro.url);
+
+const res = await fetch(new URL('/api/content-diff', Astro.url));
+const data: ContentDiffData & { error?: string } = await res.json();
+
+const matched: ContentMatchedCollection[] = data.matched ?? [];
+const coll = matched.find(c => c.collection === collection);
+
+const label         = coll?.label ?? collection;
+const rows: ContentMatchedRow[] = coll?.rows ?? [];
+
+const devOnlyCount  = coll?.devOnlyCount  ?? 0;
+const prodOnlyCount = coll?.prodOnlyCount ?? 0;
+const changedCount  = coll?.changedCount  ?? 0;
+const inSyncCount   = coll?.inSyncCount   ?? 0;
+const devTotal      = coll?.devTotal      ?? 0;
+const prodTotal     = coll?.prodTotal     ?? 0;
+
+type EnvState = 'dev-only' | 'prod-only' | 'changed' | 'in-sync';
+function getEnvState(row: ContentMatchedRow): EnvState {
+  if (row.dev && !row.prod)                          return 'dev-only';
+  if (row.prod && !row.dev)                          return 'prod-only';
+  if (row.dev && row.prod && row.diffs.length > 0)   return 'changed';
+  return 'in-sync';
+}
+
+const matchKeyTypeBadge: Record<string, string> = {
+  permalink: 'permalink',
+  slug: 'slug',
+  title: 'title',
+  id: 'id',
+};
+
+const totalDiffs = (coll?.changedCount ?? 0) + (coll?.devOnlyCount ?? 0) + (coll?.prodOnlyCount ?? 0);
+const contentDiffs = matched.reduce((s, c) => s + c.changedCount + c.devOnlyCount + c.prodOnlyCount, 0);
+---
+<Layout title={`Content — ${label}`} active="/content" counts={{ ...counts, contentDiffs }}>
+  <div class="banner">
+    <div>
+      <div class="breadcrumb">
+        <a href="/content">Content</a>
+        <span class="sep">›</span>
+        <span>{label}</span>
+      </div>
+      <h1>{label}</h1>
+      <div class="meta">
+        <code class="mono">{collection}</code>
+        <span class="env-count env-count-dev">DEV {devTotal}</span>
+        <span class="env-count env-count-prod">PROD {prodTotal}</span>
+      </div>
+    </div>
+    <div class="banner-actions">
+      <a href="/content" class="btn">← Back</a>
+    </div>
+  </div>
+
+  {!coll && (
+    <div class="error-banner">
+      Collection <code class="mono">{collection}</code> was not found. It may not be a page collection.
+    </div>
+  )}
+
+  {coll?.devError && <div class="error-banner">⚠️ Dev error: {coll.devError}</div>}
+  {coll?.prodError && <div class="error-banner">⚠️ Prod error: {coll.prodError}</div>}
+
+  {coll && (
+    <div class="items-section">
+      <!-- Filter tabs -->
+      <div class="items-header">
+        <span class="section-header" style="margin-bottom: 0; border: none; padding: 0;">
+          {rows.length} item{rows.length !== 1 ? 's' : ''}
+          {totalDiffs > 0 && <span class="diff-summary">{totalDiffs} need attention</span>}
+        </span>
+        <div class="env-toggle" id="env-toggle">
+          <button class="toggle-btn is-active" data-filter="all">
+            All ({rows.length})
+          </button>
+          <button class="toggle-btn toggle-btn-changed" data-filter="changed" disabled={changedCount === 0}>
+            Changed ({changedCount})
+          </button>
+          <button class="toggle-btn toggle-btn-dev" data-filter="dev-only" disabled={devOnlyCount === 0}>
+            Dev Only ({devOnlyCount})
+          </button>
+          <button class="toggle-btn toggle-btn-prod" data-filter="prod-only" disabled={prodOnlyCount === 0}>
+            Prod Only ({prodOnlyCount})
+          </button>
+          <button class="toggle-btn toggle-btn-sync" data-filter="in-sync" disabled={inSyncCount === 0}>
+            In Sync ({inSyncCount})
+          </button>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <div class="empty">No items found in this collection.</div>
+      ) : (
+        <>
+          <div class="table-wrap">
+            <table id="items-table">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th style="width: 120px;">DEV Status</th>
+                  <th style="width: 120px;">PROD Status</th>
+                  <th style="width: 90px; text-align: center;">Fields</th>
+                  <th style="width: 100px; text-align: center;">State</th>
+                  <th style="width: 60px;"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const state    = getEnvState(row);
+                  const itemKey  = `${row.matchKeyType}:${row.matchKey}`;
+                  const href     = `/content/${collection}/${encodeURIComponent(itemKey)}`;
+                  return (
+                    <tr data-env={state} class={`row-${state}`}>
+                      <td>
+                        <a href={href} class="item-link">{row.matchKey}</a>
+                        <span class={`key-type-badge key-type-${row.matchKeyType}`}>{matchKeyTypeBadge[row.matchKeyType]}</span>
+                        {row.dev && (
+                          <div style="font-size: 11px; color: var(--color-muted); margin-top: 2px;">
+                            DEV id: {row.dev.id}
+                            {row.dev.blockCount > 0 && ` · ${row.dev.blockCount} block${row.dev.blockCount !== 1 ? 's' : ''}`}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {row.dev
+                          ? <span class={`chip chip-${row.dev.status}`}>{row.dev.status}</span>
+                          : <span class="muted">—</span>
+                        }
+                      </td>
+                      <td>
+                        {row.prod
+                          ? <span class={`chip chip-${row.prod.status}`}>{row.prod.status}</span>
+                          : <span class="muted">—</span>
+                        }
+                      </td>
+                      <td style="text-align: center;">
+                        {state === 'changed'
+                          ? <span class="diff-count-badge">{row.diffCount}</span>
+                          : state === 'in-sync'
+                            ? <span class="muted">✓</span>
+                            : <span class="muted">—</span>
+                        }
+                      </td>
+                      <td style="text-align: center;">
+                        {state === 'dev-only'  && <span class="env-badge env-badge-dev">DEV</span>}
+                        {state === 'prod-only' && <span class="env-badge env-badge-prod">PROD</span>}
+                        {state === 'changed'   && <span class="env-badge env-badge-changed">CHANGED</span>}
+                        {state === 'in-sync'   && <span class="env-badge env-badge-sync">IN SYNC</span>}
+                      </td>
+                      <td style="text-align: center;">
+                        <a href={href} class="view-link">View →</a>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p id="no-rows-msg" class="no-rows-msg" style="display:none">
+            No items match the selected filter.
+          </p>
+        </>
+      )}
+    </div>
+  )}
+</Layout>
+
+<style>
+/* ── Breadcrumb ───────────────────────────────────────────────────────────── */
+.breadcrumb { font-size: 12px; color: var(--color-muted); margin-bottom: 4px; }
+.breadcrumb a { color: var(--color-accent); }
+.breadcrumb .sep { margin: 0 6px; }
+
+/* ── Meta ─────────────────────────────────────────────────────────────────── */
+.meta {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; margin-top: 4px; font-size: 13px; color: var(--color-muted);
+}
+.env-count {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+}
+.env-count-dev  { background: rgba(16,185,129,0.12); color: var(--color-create); border: 1px solid rgba(16,185,129,0.25); }
+.env-count-prod { background: rgba(99,102,241,0.12); color: #a5b4fc;             border: 1px solid rgba(99,102,241,0.25); }
+
+.banner-actions { display: flex; gap: 8px; }
+
+/* ── Items section ────────────────────────────────────────────────────────── */
+.items-section { margin-top: 0; }
+.items-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 14px;
+}
+
+.diff-summary {
+  font-size: 12px; color: var(--color-warning); font-weight: 400;
+  background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.25);
+  padding: 1px 8px; border-radius: 10px; margin-left: 8px;
+}
+
+/* ── Filter toggle ────────────────────────────────────────────────────────── */
+.env-toggle { display: flex; gap: 6px; flex-wrap: wrap; }
+.toggle-btn {
+  font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 10px;
+  border: 1px solid var(--color-border); background: var(--color-surface);
+  color: var(--color-muted); cursor: pointer; transition: all 0.1s;
+}
+.toggle-btn:hover:not(:disabled) { border-color: var(--color-accent); color: var(--color-text); }
+.toggle-btn:disabled { opacity: 0.35; cursor: default; }
+.toggle-btn.is-active {
+  background: rgba(99,102,241,0.15); border-color: rgba(99,102,241,0.4); color: #a5b4fc;
+}
+.toggle-btn-changed.is-active { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.3); color: var(--color-warning); }
+.toggle-btn-dev.is-active     { background: rgba(16,185,129,0.12);  border-color: rgba(16,185,129,0.35); color: var(--color-create); }
+.toggle-btn-prod.is-active    { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.35); color: var(--color-delete); }
+.toggle-btn-sync.is-active    { background: rgba(148,163,184,0.12); border-color: rgba(148,163,184,0.3); color: var(--color-muted); }
+
+/* ── Table rows ───────────────────────────────────────────────────────────── */
+.row-dev-only  td { background: rgba(16,185,129,0.04); }
+.row-prod-only td { background: rgba(248,113,113,0.04); }
+.row-changed   td { background: rgba(251,191,36,0.03); }
+
+/* ── Item link ────────────────────────────────────────────────────────────── */
+.item-link {
+  font-weight: 500; color: var(--color-text); text-decoration: none;
+}
+.item-link:hover { color: var(--color-accent); text-decoration: underline; }
+
+/* ── Key type badge ───────────────────────────────────────────────────────── */
+.key-type-badge {
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  padding: 1px 5px; border-radius: 5px; margin-left: 6px; vertical-align: middle;
+}
+.key-type-permalink { background: rgba(16,185,129,0.1);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.2); }
+.key-type-slug      { background: rgba(99,102,241,0.12); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.2); }
+.key-type-title     { background: rgba(251,191,36,0.1);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.2); }
+.key-type-id        { background: rgba(148,163,184,0.1); color: var(--color-muted); border: 1px solid var(--color-border); }
+
+/* ── Diff count badge ─────────────────────────────────────────────────────── */
+.diff-count-badge {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  background: rgba(251,191,36,0.15); color: var(--color-warning);
+  border: 1px solid rgba(251,191,36,0.3); padding: 1px 7px; border-radius: 8px;
+}
+
+/* ── Env badges ───────────────────────────────────────────────────────────── */
+.env-badge {
+  display: inline-block; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.5px; text-transform: uppercase; padding: 2px 6px; border-radius: 8px;
+}
+.env-badge-dev     { background: rgba(16,185,129,0.15);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.3); }
+.env-badge-prod    { background: rgba(248,113,113,0.15); color: var(--color-delete); border: 1px solid rgba(248,113,113,0.3); }
+.env-badge-changed { background: rgba(251,191,36,0.12);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.25); }
+.env-badge-sync    { background: rgba(148,163,184,0.1);  color: var(--color-muted); border: 1px solid rgba(148,163,184,0.2); }
+
+/* ── Status chips ─────────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; padding: 3px 10px;
+  border-radius: 10px; font-size: 12px; font-weight: 600; text-transform: capitalize;
+}
+.chip-published { background: rgba(34,197,94,0.15);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.3); }
+.chip-draft     { background: rgba(251,191,36,0.15);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.3); }
+.chip-review    { background: rgba(99,102,241,0.15);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.3); }
+.chip-archived  { background: rgba(148,163,184,0.15); color: var(--color-muted);   border: 1px solid rgba(148,163,184,0.3); }
+.chip-unknown   { background: rgba(148,163,184,0.1);  color: var(--color-muted);   border: 1px solid var(--color-border); }
+
+/* ── View link ────────────────────────────────────────────────────────────── */
+.view-link { font-size: 12px; color: var(--color-accent); text-decoration: none; white-space: nowrap; }
+.view-link:hover { text-decoration: underline; }
+
+.no-rows-msg {
+  text-align: center; padding: 24px; color: var(--color-muted);
+  font-size: 13px; font-style: italic;
+}
+.muted { color: var(--color-muted); font-size: 12px; }
+</style>
+
+<script>
+const toggleContainer = document.getElementById('env-toggle');
+const table           = document.getElementById('items-table');
+const noRowsMsg       = document.getElementById('no-rows-msg');
+
+if (toggleContainer && table) {
+  const buttons = Array.from(toggleContainer.querySelectorAll<HTMLButtonElement>('.toggle-btn'));
+
+  function applyFilter(filter: string) {
+    buttons.forEach(btn => {
+      btn.classList.toggle('is-active', btn.dataset.filter === filter);
+    });
+
+    const rows = Array.from(table!.querySelectorAll<HTMLTableRowElement>('tbody tr'));
+    let visible = 0;
+
+    rows.forEach(row => {
+      const env  = row.dataset.env ?? '';
+      const show = filter === 'all' || env === filter;
+      row.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+
+    if (noRowsMsg) {
+      noRowsMsg.style.display = visible === 0 ? '' : 'none';
+    }
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!btn.disabled) applyFilter(btn.dataset.filter ?? 'all');
+    });
+  });
+}
+</script>

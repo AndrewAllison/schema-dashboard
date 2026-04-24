@@ -1,0 +1,389 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { counts, error: diffError } = await getDiffData(Astro.url);
+
+const res  = await fetch(new URL('/api/frontend-components', Astro.url));
+const data = await res.json();
+
+interface ChoiceField { field: string; choices: string[]; }
+interface ComponentInfo {
+  name: string;
+  collectionName: string;
+  existsInDirectus: boolean;
+  hasBgColorField: boolean;
+  bgField: string | null;
+  directusBgColors: string[];
+  missingFromDirectus: string[];
+  extraInDirectus: string[];
+  otherChoiceFields: ChoiceField[];
+}
+
+const error: string | undefined = data.error;
+const blocksError: string | undefined = data.blocksError;
+const typesError: string | undefined = data.typesError;
+const components: ComponentInfo[] = data.components ?? [];
+const frontendBgColors: string[]  = data.frontendBgColors ?? [];
+const orphanedCollections: string[] = data.orphanedCollections ?? [];
+const componentCount: number       = data.componentCount ?? 0;
+const fetchedAt = data.fetchedAt ? new Date(data.fetchedAt as number).toLocaleString() : 'unknown';
+
+// Summary counts
+const missing       = components.filter((c) => !c.existsInDirectus).length;
+const withBgIssue   = components.filter((c) => c.existsInDirectus && c.missingFromDirectus.length > 0).length;
+const matched       = components.filter((c) => c.existsInDirectus).length;
+const withBgField   = components.filter((c) => c.hasBgColorField).length;
+---
+
+<Layout title="Frontend Components" active="/diff/components" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>Frontend Components vs Schema</h1>
+      <div class="meta">
+        Tracking mga-frontend redesign blocks against Directus collections · fetched {fetchedAt}
+      </div>
+    </div>
+    <button class="btn" id="refresh-btn">↻ Refresh</button>
+  </div>
+
+  {(error || diffError) && <div class="error-banner">⚠️ {error ?? diffError}</div>}
+  {blocksError && <div class="error-banner">⚠️ Blocks dir: {blocksError}</div>}
+  {typesError  && <div class="error-banner">⚠️ Types file: {typesError}</div>}
+
+  <!-- Stat cards -->
+  <div class="stat-row">
+    <div class="stat-card">
+      <div class="num">{componentCount}</div>
+      <div class="label">Components</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style={`color: ${matched === componentCount ? 'var(--color-success)' : 'var(--color-warning)'}`}>
+        {matched}
+      </div>
+      <div class="label">In Directus</div>
+    </div>
+    <div class="stat-card" style={missing > 0 ? 'border-color: rgba(239,68,68,0.4)' : ''}>
+      <div class="num" style={`color: ${missing > 0 ? 'var(--color-error)' : 'var(--color-muted)'}`}>
+        {missing}
+      </div>
+      <div class="label">Missing in Directus</div>
+    </div>
+    <div class="stat-card" style={withBgIssue > 0 ? 'border-color: rgba(251,191,36,0.4)' : ''}>
+      <div class="num" style={`color: ${withBgIssue > 0 ? 'var(--color-warning)' : 'var(--color-muted)'}`}>
+        {withBgIssue}
+      </div>
+      <div class="label">BG Colour Mismatch</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-accent)">{withBgField}</div>
+      <div class="label">Have BG Colour Field</div>
+    </div>
+  </div>
+
+  <!-- Frontend BG colour type definition -->
+  {frontendBgColors.length > 0 && (
+    <div class="info-section">
+      <div class="info-header">
+        <span class="info-title">Frontend <code>BackgroundColor</code> type</span>
+        <span class="info-meta">{frontendBgColors.length} values from <code>_redesign/types.ts</code></span>
+      </div>
+      <div class="color-chips">
+        {frontendBgColors.map((c) => (
+          <span class="color-chip">{c}</span>
+        ))}
+      </div>
+    </div>
+  )}
+
+  <!-- Main component table -->
+  {components.length > 0 && (
+    <div data-section-search>
+      <div class="section-search-bar">
+        <label class="visually-hidden" for="comp-search">Search components</label>
+        <input
+          type="search"
+          id="comp-search"
+          class="section-search-input"
+          placeholder="Search components…"
+          autocomplete="off"
+        />
+        <span class="section-search-count" aria-live="polite"></span>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Directus Collection</th>
+              <th>Status</th>
+              <th>BG Colour Field</th>
+              <th>Choice Mismatches</th>
+              <th>Other Choice Fields</th>
+            </tr>
+          </thead>
+          <tbody>
+            {components.map((c) => {
+              const rowClass = !c.existsInDirectus ? 'row-error'
+                             : c.missingFromDirectus.length > 0 ? 'row-warn'
+                             : '';
+              return (
+                <tr
+                  class={rowClass}
+                  data-search={`${c.name} ${c.collectionName}`.toLowerCase()}
+                >
+                  <td>
+                    <span class="comp-name search-hl-target">{c.name}</span>
+                  </td>
+                  <td>
+                    <code class="mono">{c.collectionName}</code>
+                  </td>
+                  <td>
+                    {c.existsInDirectus
+                      ? <span class="chip chip-ok">✓ Found</span>
+                      : <span class="chip chip-missing">✗ Missing</span>
+                    }
+                  </td>
+                  <td>
+                    {c.hasBgColorField
+                      ? (
+                        <span class="chip chip-bg">
+                          {c.bgField} · {c.directusBgColors.length} options
+                        </span>
+                      )
+                      : <span class="muted">—</span>
+                    }
+                  </td>
+                  <td>
+                    {c.missingFromDirectus.length > 0 && (
+                      <div class="mismatch-group">
+                        <div class="mismatch-label">Missing from Directus:</div>
+                        <div class="mismatch-chips">
+                          {c.missingFromDirectus.map((v) => (
+                            <span class="chip chip-missing-val" title="Frontend has this, Directus does not">{v}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {c.extraInDirectus.length > 0 && (
+                      <div class="mismatch-group">
+                        <div class="mismatch-label">Extra in Directus:</div>
+                        <div class="mismatch-chips">
+                          {c.extraInDirectus.map((v) => (
+                            <span class="chip chip-extra-val" title="Directus has this, frontend type does not">{v}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {c.missingFromDirectus.length === 0 && c.extraInDirectus.length === 0 && c.hasBgColorField && (
+                      <span class="chip chip-ok-sm">✓ In sync</span>
+                    )}
+                    {!c.hasBgColorField && <span class="muted">—</span>}
+                  </td>
+                  <td>
+                    {c.otherChoiceFields.length > 0
+                      ? (
+                        <div class="other-fields">
+                          {c.otherChoiceFields.map((f) => (
+                            <div class="other-field">
+                              <code class="field-key">{f.field}</code>
+                              <div class="other-chips">
+                                {f.choices.map((ch) => (
+                                  <span class="opt-sm">{ch}</span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                      : <span class="muted">—</span>
+                    }
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )}
+
+  <!-- Orphaned Directus collections -->
+  {orphanedCollections.length > 0 && (
+    <div class="orphan-section">
+      <h3 class="section-header">Directus block collections without a frontend component</h3>
+      <p class="section-desc">
+        These collections exist in Directus but no matching component was found in
+        <code>_redesign/blocks/</code>. They may be legacy, renamed, or not yet implemented.
+      </p>
+      <div class="orphan-chips">
+        {orphanedCollections.map((name) => (
+          <span class="orphan-chip">{name}</span>
+        ))}
+      </div>
+    </div>
+  )}
+
+</Layout>
+
+<style>
+/* Stat row */
+.stat-row {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  min-width: 100px;
+}
+
+.stat-card .num   { font-size: 26px; font-weight: 700; line-height: 1; }
+.stat-card .label { font-size: 11px; color: var(--color-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; text-align: center; }
+
+/* Frontend BG colour info block */
+.info-section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 22px;
+  overflow: hidden;
+}
+
+.info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.info-title { font-weight: 600; font-size: 13px; }
+.info-meta  { font-size: 12px; color: var(--color-muted); }
+
+.color-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 14px;
+}
+
+.color-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 10px;
+  background: rgba(99,102,241,0.1);
+  color: #a5b4fc;
+  border: 1px solid rgba(99,102,241,0.25);
+}
+
+/* Table rows */
+.row-error td { background: rgba(239,68,68,0.04); }
+.row-warn  td { background: rgba(251,191,36,0.04); }
+
+/* Component name */
+.comp-name { font-weight: 600; font-size: 13px; }
+
+/* Chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.chip-ok      { background: rgba(34,197,94,0.15);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.3); }
+.chip-ok-sm   { background: rgba(34,197,94,0.1);    color: var(--color-success); border: 1px solid rgba(34,197,94,0.2); font-size: 10px; }
+.chip-missing { background: rgba(239,68,68,0.15);   color: var(--color-error);   border: 1px solid rgba(239,68,68,0.3); }
+.chip-bg      { background: rgba(99,102,241,0.15);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.3); font-family: var(--font-mono); font-size: 10px; }
+
+/* Mismatch groups */
+.mismatch-group { margin-bottom: 6px; }
+.mismatch-group:last-child { margin-bottom: 0; }
+.mismatch-label { font-size: 10px; color: var(--color-muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.3px; }
+.mismatch-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.chip-missing-val {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(239,68,68,0.12);
+  color: #fca5a5;
+  border: 1px solid rgba(239,68,68,0.3);
+  cursor: help;
+}
+
+.chip-extra-val {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(251,191,36,0.12);
+  color: #fde68a;
+  border: 1px solid rgba(251,191,36,0.3);
+  cursor: help;
+}
+
+/* Other choice fields */
+.other-fields  { display: flex; flex-direction: column; gap: 5px; }
+.other-field   { display: flex; align-items: flex-start; gap: 8px; }
+.field-key     { font-size: 10px; color: var(--color-muted); white-space: nowrap; padding-top: 2px; }
+.other-chips   { display: flex; flex-wrap: wrap; gap: 3px; }
+.opt-sm {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+}
+
+/* Orphaned section */
+.orphan-section {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--color-border);
+}
+
+.section-desc {
+  font-size: 13px;
+  color: var(--color-muted);
+  margin-bottom: 14px;
+}
+
+.orphan-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.orphan-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  background: rgba(148,163,184,0.1);
+  color: var(--color-muted);
+  border: 1px solid rgba(148,163,184,0.2);
+}
+
+.muted { color: var(--color-muted); font-size: 12px; }
+</style>
+
+<script>
+document.getElementById('refresh-btn')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  await fetch('/api/frontend-components?refresh=true');
+  location.reload();
+});
+</script>

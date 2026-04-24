@@ -17,3 +17,5 @@ export const PROD_TOKEN = () => required('DIRECTUS_PROD_TOKEN');
 export const DEV_URL    = () => get('DIRECTUS_DEV_URL')  ?? 'https://directus-ct-shared.gpillar-dev.global.com';
 export const PROD_URL   = () => get('DIRECTUS_PROD_URL') ?? 'https://directus-ct-shared.gpillar-prod.global.com';
 export const COLLECTION_PREFIX = () => get('DIRECTUS_COLLECTION_PREFIX') ?? 'adpower_redesign';
+export const SITE_DEV_URL  = () => (get('SITE_DEV_URL')  ?? 'https://dev.adpower.com').replace(/\/$/, '');
+export const SITE_PROD_URL = () => (get('SITE_PROD_URL') ?? 'https://preprod.adpower.com').replace(/\/$/, '');

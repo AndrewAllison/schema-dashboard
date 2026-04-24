@@ -1,0 +1,531 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { counts, error: diffError } = await getDiffData(Astro.url);
+
+interface ItemDiff {
+  field: 'status' | 'title' | 'slug';
+  dev: string | null;
+  prod: string | null;
+}
+
+interface PageItemDetail {
+  id: number | string;
+  status: string;
+  title: string;
+  slug: string | null;
+  blockCount: number;
+}
+
+interface MatchedRow {
+  matchKey: string;
+  matchKeyType: 'slug' | 'title' | 'id';
+  dev: PageItemDetail | null;
+  prod: PageItemDetail | null;
+  diffs: ItemDiff[];
+}
+
+interface MatchedCollection {
+  collection: string;
+  label: string;
+  devTotal: number;
+  prodTotal: number;
+  devOnlyCount: number;
+  prodOnlyCount: number;
+  changedCount: number;
+  hasDiffs: boolean;
+  rows: MatchedRow[];
+  blockJunction: string | null;
+  allowedBlockTypes: string[];
+  devError?: string;
+  prodError?: string;
+}
+
+interface PagesDiffData {
+  matched: MatchedCollection[];
+  devOnlyCollections: string[];
+  prodOnlyCollections: string[];
+  fetchedAt: number;
+  devSnapshotError?: string;
+  prodSnapshotError?: string;
+  error?: string;
+}
+
+let data: PagesDiffData = {
+  matched: [],
+  devOnlyCollections: [],
+  prodOnlyCollections: [],
+  fetchedAt: Date.now(),
+};
+let pageError: string | undefined;
+
+try {
+  const res = await fetch(new URL('/api/pages-diff', Astro.url));
+  const json = await res.json() as PagesDiffData;
+  if (json.error) {
+    pageError = json.error;
+  } else {
+    data = json;
+  }
+} catch (err) {
+  pageError = err instanceof Error ? err.message : String(err);
+}
+
+const fetchedAtStr = data.fetchedAt
+  ? new Date(data.fetchedAt).toLocaleString()
+  : 'unknown';
+
+const totalCollections = data.matched.length + data.devOnlyCollections.length + data.prodOnlyCollections.length;
+const collectionsWithDiffs = data.matched.filter(c => c.hasDiffs).length;
+const totalDevOnly  = data.matched.reduce((s, c) => s + c.devOnlyCount, 0);
+const totalProdOnly = data.matched.reduce((s, c) => s + c.prodOnlyCount, 0);
+const totalChanged  = data.matched.reduce((s, c) => s + c.changedCount, 0);
+
+function statusClass(status: string): string {
+  if (status === 'published') return 'status-published';
+  if (status === 'draft')     return 'status-draft';
+  if (status === 'archived')  return 'status-archived';
+  return 'status-other';
+}
+---
+<Layout title="Pages Diff" active="/diff/pages-diff" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>Pages Diff</h1>
+      <div class="meta">
+        {totalCollections} collection(s) · fetched {fetchedAtStr}
+      </div>
+    </div>
+    <button class="btn" id="refresh-btn">↻ Refresh</button>
+  </div>
+
+  {(pageError || diffError) && (
+    <div class="error-banner">⚠️ {pageError ?? diffError}</div>
+  )}
+  {data.devSnapshotError && (
+    <div class="error-banner">⚠️ Dev snapshot error: {data.devSnapshotError}</div>
+  )}
+  {data.prodSnapshotError && (
+    <div class="error-banner">⚠️ Prod snapshot error: {data.prodSnapshotError}</div>
+  )}
+
+  <!-- Stat cards -->
+  <div class="stat-row">
+    <div class="stat-card">
+      <div class="num">{totalCollections}</div>
+      <div class="label">Collections</div>
+    </div>
+    <div class="stat-card" style={collectionsWithDiffs > 0 ? 'border-color: rgba(251,191,36,0.4)' : ''}>
+      <div class="num" style={`color: ${collectionsWithDiffs > 0 ? 'var(--color-warning)' : 'var(--color-muted)'}`}>
+        {collectionsWithDiffs}
+      </div>
+      <div class="label">With Diffs</div>
+    </div>
+    <div class="stat-card" style={totalDevOnly > 0 ? 'border-color: rgba(34,197,94,0.4)' : ''}>
+      <div class="num" style={`color: ${totalDevOnly > 0 ? 'var(--color-create)' : 'var(--color-muted)'}`}>
+        {totalDevOnly}
+      </div>
+      <div class="label">Dev Only</div>
+    </div>
+    <div class="stat-card" style={totalProdOnly > 0 ? 'border-color: rgba(248,113,113,0.4)' : ''}>
+      <div class="num" style={`color: ${totalProdOnly > 0 ? 'var(--color-delete)' : 'var(--color-muted)'}`}>
+        {totalProdOnly}
+      </div>
+      <div class="label">Prod Only</div>
+    </div>
+    <div class="stat-card" style={totalChanged > 0 ? 'border-color: rgba(251,191,36,0.4)' : ''}>
+      <div class="num" style={`color: ${totalChanged > 0 ? 'var(--color-update)' : 'var(--color-muted)'}`}>
+        {totalChanged}
+      </div>
+      <div class="label">Changed</div>
+    </div>
+  </div>
+
+  {data.devOnlyCollections.length > 0 && (
+    <div class="orphan-banner orphan-dev">
+      <strong>Dev-only collections</strong> (not found in prod):&nbsp;
+      {data.devOnlyCollections.map((c, i) => (
+        <span>
+          <code>{c}</code>{i < data.devOnlyCollections.length - 1 ? ', ' : ''}
+        </span>
+      ))}
+    </div>
+  )}
+
+  {data.prodOnlyCollections.length > 0 && (
+    <div class="orphan-banner orphan-prod">
+      <strong>Prod-only collections</strong> (not found in dev):&nbsp;
+      {data.prodOnlyCollections.map((c, i) => (
+        <span>
+          <code>{c}</code>{i < data.prodOnlyCollections.length - 1 ? ', ' : ''}
+        </span>
+      ))}
+    </div>
+  )}
+
+  {data.matched.length === 0 && !pageError && (
+    <p class="empty">No page collections detected. Check that DIRECTUS_COLLECTION_PREFIX is set and both tokens have read access.</p>
+  )}
+
+  <!-- One section per collection -->
+  {data.matched.map((coll) => (
+    <details class="coll-section" open={coll.hasDiffs}>
+      <summary class="coll-summary">
+        <span class="coll-label">{coll.label}</span>
+        <code class="coll-name">{coll.collection}</code>
+        <span class="env-counts">
+          <span class="env-count env-count-dev">DEV {coll.devTotal}</span>
+          <span class="env-count env-count-prod">PROD {coll.prodTotal}</span>
+        </span>
+        {coll.devOnlyCount > 0 && (
+          <span class="diff-badge diff-badge-dev">+{coll.devOnlyCount} dev</span>
+        )}
+        {coll.prodOnlyCount > 0 && (
+          <span class="diff-badge diff-badge-prod">+{coll.prodOnlyCount} prod</span>
+        )}
+        {coll.changedCount > 0 && (
+          <span class="diff-badge diff-badge-changed">{coll.changedCount} changed</span>
+        )}
+        {!coll.hasDiffs && (
+          <span class="diff-badge diff-badge-clean">in sync</span>
+        )}
+      </summary>
+
+      {(coll.devError || coll.prodError) && (
+        <div class="section-error">
+          {coll.devError  && <div>⚠️ Dev error: {coll.devError}</div>}
+          {coll.prodError && <div>⚠️ Prod error: {coll.prodError}</div>}
+        </div>
+      )}
+
+      {coll.allowedBlockTypes.length > 0 && (
+        <div class="block-types-bar">
+          Block types: {coll.allowedBlockTypes.join(', ')}
+        </div>
+      )}
+
+      {coll.rows.length === 0 ? (
+        <div class="empty-section">No items in either environment.</div>
+      ) : (
+        <div class="diff-grid">
+          <!-- Column headers -->
+          <div class="diff-col-header diff-col-header-dev">Dev</div>
+          <div class="diff-col-header diff-col-header-prod">Prod</div>
+
+          {coll.rows.map((row) => {
+            const isDevOnly  = !!row.dev  && !row.prod;
+            const isProdOnly = !!row.prod && !row.dev;
+            const isChanged  = !!row.dev  && !!row.prod && row.diffs.length > 0;
+            const stateClass = isDevOnly  ? 'diff-row--dev-only'
+                             : isProdOnly ? 'diff-row--prod-only'
+                             : isChanged  ? 'diff-row--changed'
+                             :              'diff-row--clean';
+
+            return (
+              <div class={`diff-row ${stateClass}`}>
+                <!-- Dev cell -->
+                <div class="diff-cell diff-cell-dev">
+                  {row.dev ? (
+                    <div>
+                      <div class="item-main">
+                        <span class={`status-chip ${statusClass(row.dev.status)}`}>{row.dev.status}</span>
+                        <span class="item-title">{row.dev.title}</span>
+                        {row.dev.slug && <code class="item-slug">{row.dev.slug}</code>}
+                        {row.dev.blockCount > 0 && (
+                          <span class="item-blocks">{row.dev.blockCount} block{row.dev.blockCount !== 1 ? 's' : ''}</span>
+                        )}
+                        {row.matchKeyType === 'id' && (
+                          <span class="id-match-warn" title="Matched by database ID — may be unreliable across environments">id-match</span>
+                        )}
+                      </div>
+                      {isChanged && row.diffs.map(d => (
+                        <div class="diff-field-row">
+                          <span class="diff-field-name">{d.field}</span>
+                          <span class="diff-field-val diff-field-val-dev">{d.dev ?? '—'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div class="cell-absent">—</div>
+                  )}
+                </div>
+
+                <!-- Prod cell -->
+                <div class="diff-cell diff-cell-prod">
+                  {row.prod ? (
+                    <div>
+                      <div class="item-main">
+                        <span class={`status-chip ${statusClass(row.prod.status)}`}>{row.prod.status}</span>
+                        <span class="item-title">{row.prod.title}</span>
+                        {row.prod.slug && <code class="item-slug">{row.prod.slug}</code>}
+                        {row.prod.blockCount > 0 && (
+                          <span class="item-blocks">{row.prod.blockCount} block{row.prod.blockCount !== 1 ? 's' : ''}</span>
+                        )}
+                      </div>
+                      {isChanged && row.diffs.map(d => (
+                        <div class="diff-field-row">
+                          <span class="diff-field-name">{d.field}</span>
+                          <span class="diff-field-val diff-field-val-prod">{d.prod ?? '—'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div class="cell-absent">—</div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </details>
+  ))}
+</Layout>
+
+<style>
+/* ── Override main max-width for wide diff layout ────────────────────────── */
+:global(.main) { max-width: none; }
+
+/* ── Stat cards ──────────────────────────────────────────────────────────── */
+.stat-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 24px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  min-width: 96px;
+}
+
+.stat-card .num   { font-size: 26px; font-weight: 700; line-height: 1; }
+.stat-card .label { font-size: 11px; color: var(--color-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* ── Orphan collection banners ───────────────────────────────────────────── */
+.orphan-banner {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.orphan-dev  { background: rgba(16,185,129,0.07);  border: 1px solid rgba(16,185,129,0.25); color: var(--color-create); }
+.orphan-prod { background: rgba(248,113,113,0.07); border: 1px solid rgba(248,113,113,0.25); color: var(--color-delete); }
+.orphan-banner code { background: rgba(255,255,255,0.06); }
+
+/* ── Collection section ──────────────────────────────────────────────────── */
+.coll-section {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.coll-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  list-style: none;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--color-border);
+  user-select: none;
+}
+
+.coll-summary::-webkit-details-marker { display: none; }
+.coll-summary::before {
+  content: '▶';
+  font-size: 10px;
+  color: var(--color-muted);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+details[open] > .coll-summary::before { transform: rotate(90deg); }
+
+.coll-label { font-weight: 600; font-size: 15px; }
+.coll-name  { font-family: var(--font-mono); font-size: 11px; color: var(--color-muted); }
+
+.env-counts { display: flex; gap: 6px; margin-left: auto; }
+.env-count  { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+.env-count-dev  { background: rgba(16,185,129,0.12); color: var(--color-create);  border: 1px solid rgba(16,185,129,0.25); }
+.env-count-prod { background: rgba(99,102,241,0.12);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.25); }
+
+.diff-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+.diff-badge-dev     { background: rgba(16,185,129,0.15);  color: var(--color-create); border: 1px solid rgba(16,185,129,0.3); }
+.diff-badge-prod    { background: rgba(248,113,113,0.15); color: var(--color-delete); border: 1px solid rgba(248,113,113,0.3); }
+.diff-badge-changed { background: rgba(251,191,36,0.15);  color: var(--color-update); border: 1px solid rgba(251,191,36,0.3); }
+.diff-badge-clean   { background: rgba(148,163,184,0.1);  color: var(--color-muted);  border: 1px solid rgba(148,163,184,0.2); }
+
+.section-error {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--color-error);
+  background: rgba(239,68,68,0.07);
+  border-bottom: 1px solid rgba(239,68,68,0.2);
+}
+
+.block-types-bar {
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.empty-section {
+  padding: 16px;
+  color: var(--color-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* ── Two-column diff grid ────────────────────────────────────────────────── */
+.diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.diff-col-header {
+  padding: 8px 14px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.diff-col-header-dev  { color: var(--color-create);  background: rgba(16,185,129,0.05); border-right: 1px solid var(--color-border); }
+.diff-col-header-prod { color: #a5b4fc; background: rgba(99,102,241,0.05); }
+
+.diff-row {
+  display: contents;
+}
+
+.diff-cell {
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(45,49,72,0.5);
+  min-height: 38px;
+  font-size: 13px;
+}
+
+.diff-cell-dev  { border-right: 1px solid var(--color-border); }
+
+/* Row state backgrounds — applied to both cells via sibling selectors */
+.diff-row--dev-only  .diff-cell-dev  { background: rgba(16,185,129,0.08); }
+.diff-row--dev-only  .diff-cell-prod { background: rgba(16,185,129,0.02); }
+.diff-row--prod-only .diff-cell-prod { background: rgba(248,113,113,0.08); }
+.diff-row--prod-only .diff-cell-dev  { background: rgba(248,113,113,0.02); }
+.diff-row--changed   .diff-cell      { background: rgba(251,191,36,0.05); }
+
+/* ── Item cell contents ──────────────────────────────────────────────────── */
+.item-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.item-title { font-weight: 500; }
+.item-slug  {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted);
+  background: rgba(255,255,255,0.04);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.item-blocks {
+  font-size: 11px;
+  color: var(--color-muted);
+  background: rgba(99,102,241,0.1);
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(99,102,241,0.2);
+}
+
+.id-match-warn {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--color-warning);
+  background: rgba(251,191,36,0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(251,191,36,0.25);
+}
+
+.cell-absent {
+  color: var(--color-muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 0;
+}
+
+/* ── Status chips ────────────────────────────────────────────────────────── */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  flex-shrink: 0;
+}
+
+.status-published { background: rgba(34,197,94,0.15);   color: var(--color-success); border: 1px solid rgba(34,197,94,0.3); }
+.status-draft     { background: rgba(251,191,36,0.15);  color: var(--color-warning); border: 1px solid rgba(251,191,36,0.3); }
+.status-archived  { background: rgba(148,163,184,0.12); color: var(--color-muted);   border: 1px solid rgba(148,163,184,0.2); }
+.status-other     { background: rgba(99,102,241,0.12);  color: #a5b4fc;              border: 1px solid rgba(99,102,241,0.25); }
+
+/* ── Diff field rows (for changed items) ─────────────────────────────────── */
+.diff-field-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+.diff-field-name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-muted);
+  min-width: 40px;
+  flex-shrink: 0;
+}
+
+.diff-field-val      { font-family: var(--font-mono); font-size: 11px; }
+.diff-field-val-dev  { color: var(--color-delete); }
+.diff-field-val-prod { color: var(--color-create); }
+</style>
+
+<script>
+document.getElementById('refresh-btn')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  await fetch('/api/pages-diff?refresh=true');
+  location.reload();
+});
+</script>
