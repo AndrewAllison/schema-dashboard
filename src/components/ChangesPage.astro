@@ -117,7 +117,7 @@ function summarise(v: unknown): string {
             <th style="width: 200px;">Path</th>
             <th>Prod (current)</th>
             <th>Dev (target)</th>
-            <th style="width: 120px;">Action</th>
+            <th style="width: 220px;">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -141,17 +141,33 @@ function summarise(v: unknown): string {
                   {isArr ? null : <span class="diff-add">{summarise(ch.lhs)}</span>}
                 </td>
                 <td>
-                  <div
-                    class="apply-wrap"
-                    data-state="idle"
-                    data-action="update"
-                    data-entity={entityKind(u.kind)}
-                    data-item={JSON.stringify(u.item)}
-                    data-changes={JSON.stringify(u.changes)}
-                    data-collection={u.item.collection}
-                  >
-                    <button class="apply-btn">Apply to prod</button>
-                    <div class="error-msg"></div>
+                  <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div
+                      class="apply-wrap"
+                      data-state="idle"
+                      data-action="update"
+                      data-entity={entityKind(u.kind)}
+                      data-item={JSON.stringify(u.item)}
+                      data-changes={JSON.stringify(u.changes)}
+                      data-collection={u.item.collection}
+                      data-target="prod"
+                    >
+                      <button class="apply-btn">Apply to prod</button>
+                      <div class="error-msg"></div>
+                    </div>
+                    <div
+                      class="apply-wrap"
+                      data-state="idle"
+                      data-action="update"
+                      data-entity={entityKind(u.kind)}
+                      data-item={JSON.stringify(u.item)}
+                      data-changes={JSON.stringify(u.changes)}
+                      data-collection={u.item.collection}
+                      data-target="dev"
+                    >
+                      <button class="apply-btn apply-btn-dev">Apply to dev</button>
+                      <div class="error-msg"></div>
+                    </div>
                   </div>
                 </td>
               </tr>

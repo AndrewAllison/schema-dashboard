@@ -35,6 +35,7 @@ const navItems: NavItem[] = [
   { href: '/diff/changes/options',   label: '⚙️ Option Changes',    count: counts.options },
   { href: '/diff/matched',           label: '✅ Matched',           count: counts.matched },
   { href: '/diff/junction-conflicts',label: '⚡ Junction Conflicts',count: counts.junctionConflicts },
+  { href: '/diff/field-compare',     label: '📋 Field Compare',     count: 0, noCount: true },
   { separator: true, label: 'Visualise' },
   { href: '/diff/graph',      label: '🕸️ Relationship Graph', count: 0, noCount: true },
   { href: '/diff/pages-diff', label: '📄 Pages Diff',         count: 0, noCount: true },
@@ -44,6 +45,8 @@ const navItems: NavItem[] = [
   { href: '/diff/components', label: '🧩 Components',   count: 0, noCount: true },
   { separator: true, label: 'Content Parity' },
   { href: '/content', label: '⚡ Content Hub', count: counts.contentDiffs ?? 0, noCount: !(counts.contentDiffs) },
+  { separator: true, label: 'Audit' },
+  { href: '/history', label: '🕒 Schema History', count: 0, noCount: true },
 ];
 ---
 <!DOCTYPE html>
@@ -100,6 +103,7 @@ async function applyChange(wrap: HTMLElement) {
       item:       JSON.parse(wrap.dataset.item   ?? '{}'),
       changes:    JSON.parse(wrap.dataset.changes ?? '[]'),
       collection: wrap.dataset.collection,
+      target:     wrap.dataset.target ?? 'prod',
     };
     const res = await fetch('/api/apply', {
       method: 'POST',

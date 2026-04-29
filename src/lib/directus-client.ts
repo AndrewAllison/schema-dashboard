@@ -1,4 +1,4 @@
-import { PROD_TOKEN, PROD_URL } from './env';
+import { DEV_TOKEN, DEV_URL, PROD_TOKEN, PROD_URL } from './env';
 
 interface ApplyPayload {
   action: 'create' | 'update';
@@ -6,12 +6,18 @@ interface ApplyPayload {
   item: Record<string, unknown>;
   changes?: Array<{ path: string; lhs: unknown; rhs: unknown }>;
   collection?: string;
+  target?: 'prod' | 'dev';
 }
 
 export async function applyChange(payload: ApplyPayload): Promise<void> {
-  const token = PROD_TOKEN();
-  const base  = PROD_URL();
-  const { action, entity, item, changes, collection } = payload;
+  const targetEnv = payload.target ?? 'prod';
+  const token = targetEnv === 'dev' ? DEV_TOKEN() : PROD_TOKEN();
+  const base  = targetEnv === 'dev' ? DEV_URL()   : PROD_URL();
+  const { action, entity, changes, collection } = payload;
+  // For dev target on updates, apply prod (rhs) values back onto the item
+  const item = (action === 'update' && targetEnv === 'dev')
+    ? applyRhsToItem(payload.item, changes)
+    : payload.item;
 
   let url: string;
   let body: Record<string, unknown>;
@@ -82,4 +88,32 @@ function buildUpdateBody(
     if (k && k in item) body[k] = item[k as keyof typeof item];
   }
   return body;
+}
+
+/**
+ * Deep-clone item and overwrite each changed path with its rhs (prod) value,
+ * so the result can be PATCH'd onto dev to pull prod's values down.
+ */
+function applyRhsToItem(
+  item: Record<string, unknown>,
+  changes?: Array<{ path: string; rhs: unknown }>
+): Record<string, unknown> {
+  if (!changes?.length) return item;
+  const clone = JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
+  for (const c of changes) {
+    setAtPath(clone, c.path, c.rhs);
+  }
+  return clone;
+}
+
+function setAtPath(obj: Record<string, unknown>, path: string, value: unknown): void {
+  const parts = path.split('.');
+  let cur: any = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object') {
+      cur[parts[i]] = {};
+    }
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
 }

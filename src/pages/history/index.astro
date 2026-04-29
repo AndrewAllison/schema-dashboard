@@ -1,0 +1,139 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { counts } = await getDiffData(Astro.url);
+
+const res       = await fetch(new URL('/api/history', Astro.url));
+const snapshots = res.ok ? await res.json() : [];
+---
+<Layout title="Schema History" active="/history" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>🕒 Schema History</h1>
+      <div class="meta">{snapshots.length} snapshot{snapshots.length !== 1 ? 's' : ''} recorded</div>
+    </div>
+  </div>
+
+  <!-- Take Snapshot -->
+  <div class="snapshot-form">
+    <div class="snapshot-form-heading">Take Snapshot</div>
+    <div class="snapshot-form-body">
+      <input
+        type="text"
+        id="snapshot-label"
+        class="section-search-input"
+        placeholder="Optional label (e.g. Before v2.0 migration)"
+        style="max-width: 360px;"
+        autocomplete="off"
+      />
+      <button class="btn" id="snapshot-btn">📷 Take Snapshot</button>
+      <span id="snapshot-status" style="font-size: 13px; color: var(--color-muted);"></span>
+    </div>
+  </div>
+
+  <!-- Snapshot list -->
+  {snapshots.length === 0 ? (
+    <p class="empty" style="margin-top: 32px;">No snapshots yet. Take your first snapshot above.</p>
+  ) : (
+    <div class="table-wrap" style="margin-top: 24px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Label</th>
+            <th style="text-align: right;">Dev Collections</th>
+            <th style="text-align: right;">Dev Fields</th>
+            <th style="text-align: right;">Prod Collections</th>
+            <th style="text-align: right;">Prod Fields</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {snapshots.map((s: any) => (
+            <tr>
+              <td style="white-space: nowrap; color: var(--color-muted); font-size: 12px;">
+                {new Date(s.timestamp).toLocaleString()}
+              </td>
+              <td>
+                {s.label
+                  ? <span>{s.label}</span>
+                  : <span style="color: var(--color-muted); font-style: italic;">—</span>
+                }
+              </td>
+              <td style="text-align: right; font-variant-numeric: tabular-nums;">{s.counts.devCollections}</td>
+              <td style="text-align: right; font-variant-numeric: tabular-nums;">{s.counts.devFields}</td>
+              <td style="text-align: right; font-variant-numeric: tabular-nums;">{s.counts.prodCollections}</td>
+              <td style="text-align: right; font-variant-numeric: tabular-nums;">{s.counts.prodFields}</td>
+              <td>
+                <a href={`/history/${s.id}`} class="btn" style="font-size: 12px; padding: 4px 10px;">View →</a>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+</Layout>
+
+<style>
+.snapshot-form {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.snapshot-form-heading {
+  padding: 10px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(255,255,255,0.02);
+}
+
+.snapshot-form-body {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+</style>
+
+<script>
+const btn    = document.getElementById('snapshot-btn') as HTMLButtonElement;
+const input  = document.getElementById('snapshot-label') as HTMLInputElement;
+const status = document.getElementById('snapshot-status')!;
+
+btn.addEventListener('click', async () => {
+  btn.disabled = true;
+  btn.textContent = 'Taking snapshot…';
+  status.textContent = '';
+  status.style.color = 'var(--color-muted)';
+
+  try {
+    const label = input.value.trim() || undefined;
+    const res   = await fetch('/api/history/snapshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+    const json = await res.json();
+    if (json.ok) {
+      window.location.href = `/history/${json.snapshot.id}`;
+    } else {
+      throw new Error(json.error ?? 'Unknown error');
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    status.textContent = `Error: ${msg}`;
+    status.style.color = 'var(--color-error)';
+    btn.disabled = false;
+    btn.textContent = '📷 Take Snapshot';
+  }
+});
+</script>

@@ -1,0 +1,330 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { diff, matched, counts, fetchedAt, error } = await getDiffData(Astro.url);
+
+const pendingCollections = new Set<string>(
+  diff.collections.creates.map((c: any) => c.collection as string)
+);
+
+// Build a map: collectionName → { devOnly, prodOnly, changed, matched }
+type FieldEntry =
+  | { status: 'dev-only';  field: any }
+  | { status: 'prod-only'; field: any }
+  | { status: 'changed';   item: any; changes: any[] }
+  | { status: 'matched';   field: any };
+
+const collMap = new Map<string, FieldEntry[]>();
+
+function ensure(coll: string) {
+  if (!collMap.has(coll)) collMap.set(coll, []);
+  return collMap.get(coll)!;
+}
+
+for (const f of diff.fields.creates)  ensure(f.collection as string).push({ status: 'dev-only',  field: f });
+for (const f of diff.fields.deletes)  ensure(f.collection as string).push({ status: 'prod-only', field: f });
+for (const u of diff.fields.updates)  ensure(u.item.collection as string).push({ status: 'changed', item: u.item, changes: u.changes });
+for (const f of matched.fields)       ensure(f.collection as string).push({ status: 'matched',   field: f });
+
+// Sort collections: those with dev-only or prod-only fields first, then by name
+const collEntries = [...collMap.entries()]
+  .filter(([, entries]) => entries.some(e => e.status !== 'matched'))
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([name, entries]) => ({
+    name,
+    gated: pendingCollections.has(name),
+    devOnly:  entries.filter((e): e is { status: 'dev-only';  field: any }               => e.status === 'dev-only'),
+    prodOnly: entries.filter((e): e is { status: 'prod-only'; field: any }               => e.status === 'prod-only'),
+    changed:  entries.filter((e): e is { status: 'changed';   item: any; changes: any[] } => e.status === 'changed'),
+    matchedFields: entries.filter((e): e is { status: 'matched'; field: any }            => e.status === 'matched'),
+  }));
+
+const totalCollections = collEntries.length;
+const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown';
+
+function fieldType(f: any): string {
+  return f.schema?.data_type ?? f.type ?? '—';
+}
+---
+<Layout title="Field Compare" active="/diff/field-compare" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>📋 Field Compare</h1>
+      <div class="meta">{totalCollections} collection{totalCollections !== 1 ? 's' : ''} with field differences · fetched {fetchedAtStr}</div>
+    </div>
+  </div>
+
+  {error && <div class="error-banner">⚠️ {error}</div>}
+
+  {totalCollections === 0 && (
+    <p class="empty">All fields are in sync between dev and prod.</p>
+  )}
+
+  {totalCollections > 0 && (
+    <div class="fc-search-wrap">
+      <input
+        type="search"
+        id="fc-search"
+        class="fc-search"
+        placeholder="Filter collections or fields…"
+        autocomplete="off"
+      />
+    </div>
+  )}
+
+  <div id="fc-list">
+    {collEntries.map(coll => (
+      <div
+        class="fc-collection"
+        data-coll={coll.name.toLowerCase()}
+        data-fields={[
+          ...coll.devOnly.map((e: any) => e.field.field),
+          ...coll.prodOnly.map((e: any) => e.field.field),
+          ...coll.changed.map((e: any) => e.item.field),
+        ].join(' ').toLowerCase()}
+      >
+        <div class="fc-coll-header">
+          <code class="mono">{coll.name}</code>
+          <div class="fc-badges">
+            {coll.devOnly.length > 0   && <span class="fc-badge create">+{coll.devOnly.length} dev-only</span>}
+            {coll.prodOnly.length > 0  && <span class="fc-badge delete">−{coll.prodOnly.length} prod-only</span>}
+            {coll.changed.length > 0   && <span class="fc-badge update">~{coll.changed.length} changed</span>}
+            {coll.gated               && <span class="fc-badge gated">collection not yet in prod</span>}
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>Type</th>
+                <th style="width:60px; text-align:center;">Dev</th>
+                <th style="width:60px; text-align:center;">Prod</th>
+                <th style="width:220px;">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {coll.devOnly.map((e: any) => (
+                <tr class="row-dev-only">
+                  <td><code class="mono diff-add">{e.field.field}</code></td>
+                  <td class="type-cell">{fieldType(e.field)}</td>
+                  <td class="status-cell status-yes">✓</td>
+                  <td class="status-cell status-no">✗</td>
+                  <td>
+                    <div
+                      class="apply-wrap"
+                      data-state={coll.gated ? 'gated' : 'idle'}
+                      data-action="create"
+                      data-entity="field"
+                      data-item={JSON.stringify(e.field)}
+                      data-changes="[]"
+                      data-collection={coll.name}
+                      data-target="prod"
+                    >
+                      <button class="apply-btn" disabled={coll.gated}>
+                        {coll.gated ? 'Apply collection first' : 'Apply to prod'}
+                      </button>
+                      <div class="error-msg"></div>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+
+              {coll.prodOnly.map((e: any) => (
+                <tr class="row-prod-only">
+                  <td><code class="mono diff-del">{e.field.field}</code></td>
+                  <td class="type-cell">{fieldType(e.field)}</td>
+                  <td class="status-cell status-no">✗</td>
+                  <td class="status-cell status-yes">✓</td>
+                  <td>
+                    <div
+                      class="apply-wrap"
+                      data-state="idle"
+                      data-action="create"
+                      data-entity="field"
+                      data-item={JSON.stringify(e.field)}
+                      data-changes="[]"
+                      data-collection={coll.name}
+                      data-target="dev"
+                    >
+                      <button class="apply-btn apply-btn-dev">Apply to dev</button>
+                      <div class="error-msg"></div>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+
+              {coll.changed.map((e: any) => (
+                <tr class="row-changed">
+                  <td><code class="mono" style="color: var(--color-update);">{e.item.field}</code></td>
+                  <td class="type-cell">{fieldType(e.item)}</td>
+                  <td class="status-cell status-diff">~</td>
+                  <td class="status-cell status-diff">~</td>
+                  <td>
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                      <div
+                        class="apply-wrap"
+                        data-state="idle"
+                        data-action="update"
+                        data-entity="field"
+                        data-item={JSON.stringify(e.item)}
+                        data-changes={JSON.stringify(e.changes)}
+                        data-collection={coll.name}
+                        data-target="prod"
+                      >
+                        <button class="apply-btn">Apply to prod</button>
+                        <div class="error-msg"></div>
+                      </div>
+                      <div
+                        class="apply-wrap"
+                        data-state="idle"
+                        data-action="update"
+                        data-entity="field"
+                        data-item={JSON.stringify(e.item)}
+                        data-changes={JSON.stringify(e.changes)}
+                        data-collection={coll.name}
+                        data-target="dev"
+                      >
+                        <button class="apply-btn apply-btn-dev">Apply to dev</button>
+                        <div class="error-msg"></div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+
+              {coll.matchedFields.length > 0 && (
+                <tr class="row-matched-toggle" data-coll-matched={coll.name}>
+                  <td colspan="5" class="matched-toggle-cell">
+                    <button class="matched-toggle-btn" data-target-coll={coll.name}>
+                      Show {coll.matchedFields.length} matching field{coll.matchedFields.length !== 1 ? 's' : ''} ▾
+                    </button>
+                  </td>
+                </tr>
+              )}
+              {coll.matchedFields.map((e: any) => (
+                <tr class="row-matched" data-matched-row={coll.name} style="display:none;">
+                  <td><code class="mono" style="color: var(--color-muted);">{e.field.field}</code></td>
+                  <td class="type-cell">{fieldType(e.field)}</td>
+                  <td class="status-cell status-matched">✓</td>
+                  <td class="status-cell status-matched">✓</td>
+                  <td style="color: var(--color-muted); font-size: 11px;">in sync</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ))}
+  </div>
+</Layout>
+
+<style>
+.fc-search-wrap {
+  margin-bottom: 20px;
+}
+
+.fc-search {
+  width: 100%;
+  max-width: 480px;
+  padding: 8px 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.fc-search:focus { outline: none; border-color: var(--color-accent); }
+
+#fc-list { display: flex; flex-direction: column; gap: 24px; }
+
+.fc-collection {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.fc-coll-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(255,255,255,0.02);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fc-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.fc-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.fc-badge.create { background: rgba(16,185,129,0.15);  color: var(--color-create); }
+.fc-badge.delete { background: rgba(248,113,113,0.15); color: var(--color-delete); }
+.fc-badge.update { background: rgba(251,191,36,0.15);  color: var(--color-update); }
+.fc-badge.gated  { background: rgba(99,102,241,0.12);  color: var(--color-accent); }
+
+.type-cell { font-size: 11px; color: var(--color-muted); font-family: var(--font-mono); }
+
+.status-cell { text-align: center; font-size: 12px; font-weight: 600; }
+.status-yes     { color: var(--color-create); }
+.status-no      { color: var(--color-delete); }
+.status-diff    { color: var(--color-update); }
+.status-matched { color: rgba(255,255,255,0.2); }
+
+.row-matched { opacity: 0.5; }
+
+.matched-toggle-cell { padding: 6px 16px; }
+
+.matched-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--color-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.matched-toggle-btn:hover { color: var(--color-text); }
+
+.fc-collection.is-hidden { display: none; }
+</style>
+
+<script>
+// Search filter
+const searchEl = document.getElementById('fc-search') as HTMLInputElement | null;
+searchEl?.addEventListener('input', () => {
+  const q = searchEl.value.toLowerCase().trim();
+  const terms = q.split(/\s+/).filter(Boolean);
+  for (const el of document.querySelectorAll<HTMLElement>('.fc-collection')) {
+    if (terms.length === 0) { el.classList.remove('is-hidden'); continue; }
+    const haystack = `${el.dataset.coll} ${el.dataset.fields}`;
+    el.classList.toggle('is-hidden', !terms.every(t => haystack.includes(t)));
+  }
+});
+
+// Matched rows toggle
+document.addEventListener('click', (e) => {
+  const btn = (e.target as Element).closest<HTMLElement>('.matched-toggle-btn');
+  if (!btn) return;
+  const coll = btn.dataset.targetColl!;
+  const rows = document.querySelectorAll<HTMLElement>(`[data-matched-row="${coll}"]`);
+  const visible = rows[0]?.style.display !== 'none';
+  rows.forEach(r => r.style.display = visible ? 'none' : '');
+  btn.textContent = visible
+    ? btn.textContent!.replace('▴', '▾')
+    : btn.textContent!.replace('▾', '▴');
+});
+</script>

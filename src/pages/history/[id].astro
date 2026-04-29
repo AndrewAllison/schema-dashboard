@@ -1,0 +1,462 @@
+---
+import Layout from '../../components/Layout.astro';
+import { getDiffData } from '../../lib/getDiffData';
+
+const { id } = Astro.params;
+
+const [{ counts }, histRes] = await Promise.all([
+  getDiffData(Astro.url),
+  fetch(new URL(`/api/history/${id}`, Astro.url)),
+]);
+
+if (!histRes.ok) {
+  return Astro.redirect('/history');
+}
+
+const data      = await histRes.json();
+const snapshot  = data.snapshot;
+const prevTs    = data.prevTimestamp ? new Date(data.prevTimestamp).toLocaleString() : null;
+
+type SnapshotDiff = {
+  collections: { creates: any[]; updates: any[]; deletes: any[] };
+  fields:      { creates: any[]; updates: any[]; deletes: any[] };
+  relations:   { creates: any[]; updates: any[]; deletes: any[] };
+};
+
+const empty: SnapshotDiff = {
+  collections: { creates: [], updates: [], deletes: [] },
+  fields:      { creates: [], updates: [], deletes: [] },
+  relations:   { creates: [], updates: [], deletes: [] },
+};
+
+const devVsProd: SnapshotDiff = data.devVsProd  ?? empty;
+const devDelta:  SnapshotDiff | null = data.devDelta  ?? null;
+const prodDelta: SnapshotDiff | null = data.prodDelta ?? null;
+
+function totalChanges(diff: SnapshotDiff) {
+  return (
+    diff.collections.creates.length + diff.collections.updates.length + diff.collections.deletes.length +
+    diff.fields.creates.length      + diff.fields.updates.length      + diff.fields.deletes.length      +
+    diff.relations.creates.length   + diff.relations.updates.length   + diff.relations.deletes.length
+  );
+}
+
+const devVsProdTotal = totalChanges(devVsProd);
+const devDeltaTotal  = devDelta  ? totalChanges(devDelta)  : 0;
+const prodDeltaTotal = prodDelta ? totalChanges(prodDelta) : 0;
+const hasPrev        = devDelta !== null || prodDelta !== null;
+
+const snapshotDate = new Date(snapshot.timestamp).toLocaleString();
+---
+<Layout title={`Snapshot — ${snapshotDate}`} active="/history" counts={counts}>
+  <div class="banner">
+    <div>
+      <h1>{snapshot.label ? snapshot.label : 'Schema Snapshot'}</h1>
+      <div class="meta">
+        Taken {snapshotDate}
+        {prevTs && <> · Previous snapshot: {prevTs}</>}
+      </div>
+    </div>
+    <a href="/history" class="btn">← History</a>
+  </div>
+
+  <!-- Counts summary -->
+  <div class="summary-grid">
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-accent);">{snapshot.counts.devCollections}</div>
+      <div class="label">Dev Collections</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-accent);">{snapshot.counts.devFields}</div>
+      <div class="label">Dev Fields</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-accent);">{snapshot.counts.devRelations}</div>
+      <div class="label">Dev Relations</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-create);">{snapshot.counts.prodCollections}</div>
+      <div class="label">Prod Collections</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-create);">{snapshot.counts.prodFields}</div>
+      <div class="label">Prod Fields</div>
+    </div>
+    <div class="stat-card">
+      <div class="num" style="color: var(--color-create);">{snapshot.counts.prodRelations}</div>
+      <div class="label">Prod Relations</div>
+    </div>
+  </div>
+
+  <!-- ─── Changes since previous snapshot ───────────────────────── -->
+  <h2 class="section-heading">Changes Since Previous Snapshot</h2>
+  {!hasPrev ? (
+    <p class="empty">This is the first snapshot — no previous state to compare against.</p>
+  ) : (
+    <div class="delta-grid">
+      <!-- Dev changes -->
+      <div class="delta-panel">
+        <div class="delta-panel-heading">Dev Changes</div>
+        <div class="delta-panel-body">
+          {devDeltaTotal === 0 ? (
+            <p class="empty" style="font-size: 13px;">No changes in dev since the previous snapshot.</p>
+          ) : (
+            <>
+              {devDelta!.collections.creates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label create">+ {devDelta!.collections.creates.length} collection{devDelta!.collections.creates.length !== 1 ? 's' : ''} added</span>
+                  <div class="pill-row">
+                    {devDelta!.collections.creates.map((c: any) => <span class="pill pill-create">{c.collection}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.collections.deletes.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label delete">− {devDelta!.collections.deletes.length} collection{devDelta!.collections.deletes.length !== 1 ? 's' : ''} removed</span>
+                  <div class="pill-row">
+                    {devDelta!.collections.deletes.map((c: any) => <span class="pill pill-delete">{c.collection}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.collections.updates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label update">~ {devDelta!.collections.updates.length} collection{devDelta!.collections.updates.length !== 1 ? 's' : ''} modified</span>
+                  <div class="pill-row">
+                    {devDelta!.collections.updates.map((u: any) => <span class="pill pill-update">{u.item?.collection}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.fields.creates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label create">+ {devDelta!.fields.creates.length} field{devDelta!.fields.creates.length !== 1 ? 's' : ''} added</span>
+                  <div class="pill-row">
+                    {devDelta!.fields.creates.map((f: any) => <span class="pill pill-create">{f.collection}.{f.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.fields.deletes.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label delete">− {devDelta!.fields.deletes.length} field{devDelta!.fields.deletes.length !== 1 ? 's' : ''} removed</span>
+                  <div class="pill-row">
+                    {devDelta!.fields.deletes.map((f: any) => <span class="pill pill-delete">{f.collection}.{f.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.fields.updates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label update">~ {devDelta!.fields.updates.length} field{devDelta!.fields.updates.length !== 1 ? 's' : ''} modified</span>
+                  <div class="pill-row">
+                    {devDelta!.fields.updates.map((u: any) => <span class="pill pill-update">{u.item?.collection}.{u.item?.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.relations.creates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label create">+ {devDelta!.relations.creates.length} relation{devDelta!.relations.creates.length !== 1 ? 's' : ''} added</span>
+                  <div class="pill-row">
+                    {devDelta!.relations.creates.map((r: any) => <span class="pill pill-create">{r.collection}.{r.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.relations.deletes.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label delete">− {devDelta!.relations.deletes.length} relation{devDelta!.relations.deletes.length !== 1 ? 's' : ''} removed</span>
+                  <div class="pill-row">
+                    {devDelta!.relations.deletes.map((r: any) => <span class="pill pill-delete">{r.collection}.{r.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {devDelta!.relations.updates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label update">~ {devDelta!.relations.updates.length} relation{devDelta!.relations.updates.length !== 1 ? 's' : ''} modified</span>
+                  <div class="pill-row">
+                    {devDelta!.relations.updates.map((u: any) => <span class="pill pill-update">{u.item?.collection}.{u.item?.field}</span>)}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      <!-- Prod changes -->
+      <div class="delta-panel">
+        <div class="delta-panel-heading">Prod Changes</div>
+        <div class="delta-panel-body">
+          {prodDeltaTotal === 0 ? (
+            <p class="empty" style="font-size: 13px;">No changes in prod since the previous snapshot.</p>
+          ) : (
+            <>
+              {prodDelta!.collections.creates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label create">+ {prodDelta!.collections.creates.length} collection{prodDelta!.collections.creates.length !== 1 ? 's' : ''} added</span>
+                  <div class="pill-row">
+                    {prodDelta!.collections.creates.map((c: any) => <span class="pill pill-create">{c.collection}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.collections.deletes.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label delete">− {prodDelta!.collections.deletes.length} collection{prodDelta!.collections.deletes.length !== 1 ? 's' : ''} removed</span>
+                  <div class="pill-row">
+                    {prodDelta!.collections.deletes.map((c: any) => <span class="pill pill-delete">{c.collection}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.collections.updates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label update">~ {prodDelta!.collections.updates.length} collection{prodDelta!.collections.updates.length !== 1 ? 's' : ''} modified</span>
+                  <div class="pill-row">
+                    {prodDelta!.collections.updates.map((u: any) => <span class="pill pill-update">{u.item?.collection}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.fields.creates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label create">+ {prodDelta!.fields.creates.length} field{prodDelta!.fields.creates.length !== 1 ? 's' : ''} added</span>
+                  <div class="pill-row">
+                    {prodDelta!.fields.creates.map((f: any) => <span class="pill pill-create">{f.collection}.{f.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.fields.deletes.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label delete">− {prodDelta!.fields.deletes.length} field{prodDelta!.fields.deletes.length !== 1 ? 's' : ''} removed</span>
+                  <div class="pill-row">
+                    {prodDelta!.fields.deletes.map((f: any) => <span class="pill pill-delete">{f.collection}.{f.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.fields.updates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label update">~ {prodDelta!.fields.updates.length} field{prodDelta!.fields.updates.length !== 1 ? 's' : ''} modified</span>
+                  <div class="pill-row">
+                    {prodDelta!.fields.updates.map((u: any) => <span class="pill pill-update">{u.item?.collection}.{u.item?.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.relations.creates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label create">+ {prodDelta!.relations.creates.length} relation{prodDelta!.relations.creates.length !== 1 ? 's' : ''} added</span>
+                  <div class="pill-row">
+                    {prodDelta!.relations.creates.map((r: any) => <span class="pill pill-create">{r.collection}.{r.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.relations.deletes.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label delete">− {prodDelta!.relations.deletes.length} relation{prodDelta!.relations.deletes.length !== 1 ? 's' : ''} removed</span>
+                  <div class="pill-row">
+                    {prodDelta!.relations.deletes.map((r: any) => <span class="pill pill-delete">{r.collection}.{r.field}</span>)}
+                  </div>
+                </div>
+              )}
+              {prodDelta!.relations.updates.length > 0 && (
+                <div class="delta-row">
+                  <span class="delta-label update">~ {prodDelta!.relations.updates.length} relation{prodDelta!.relations.updates.length !== 1 ? 's' : ''} modified</span>
+                  <div class="pill-row">
+                    {prodDelta!.relations.updates.map((u: any) => <span class="pill pill-update">{u.item?.collection}.{u.item?.field}</span>)}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )}
+
+  <!-- ─── Dev vs Prod at snapshot time ───────────────────────────── -->
+  <h2 class="section-heading" style="margin-top: 40px;">Dev vs Prod at Snapshot Time</h2>
+  {devVsProdTotal === 0 ? (
+    <p class="empty">Dev and prod were fully in sync when this snapshot was taken.</p>
+  ) : (
+    <div class="diff-blocks">
+      {devVsProd.collections.creates.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title create">Collections in Dev only ({devVsProd.collections.creates.length})</div>
+          <div class="pill-row">
+            {devVsProd.collections.creates.map((c: any) => (
+              <span class="pill pill-create">{c.collection}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {devVsProd.collections.deletes.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title delete">Collections in Prod only ({devVsProd.collections.deletes.length})</div>
+          <div class="pill-row">
+            {devVsProd.collections.deletes.map((c: any) => (
+              <span class="pill pill-delete">{c.collection}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {devVsProd.collections.updates.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title update">Collections with differences ({devVsProd.collections.updates.length})</div>
+          <div class="pill-row">
+            {devVsProd.collections.updates.map((u: any) => (
+              <span class="pill pill-update">{u.item?.collection} <span style="opacity:0.6;">({u.changes?.length ?? 0} change{u.changes?.length !== 1 ? 's' : ''})</span></span>
+            ))}
+          </div>
+        </div>
+      )}
+      {devVsProd.fields.creates.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title create">Fields in Dev only ({devVsProd.fields.creates.length})</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Collection</th><th>Field</th><th>Type</th></tr></thead>
+            <tbody>
+              {devVsProd.fields.creates.map((f: any) => (
+                <tr>
+                  <td><code class="mono">{f.collection}</code></td>
+                  <td><code class="mono diff-add">{f.field}</code></td>
+                  <td style="color: var(--color-muted);">{f.schema?.data_type ?? f.type ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </div>
+      )}
+      {devVsProd.fields.deletes.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title delete">Fields in Prod only ({devVsProd.fields.deletes.length})</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Collection</th><th>Field</th><th>Type</th></tr></thead>
+            <tbody>
+              {devVsProd.fields.deletes.map((f: any) => (
+                <tr>
+                  <td><code class="mono">{f.collection}</code></td>
+                  <td><code class="mono diff-del">{f.field}</code></td>
+                  <td style="color: var(--color-muted);">{f.schema?.data_type ?? f.type ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        </div>
+      )}
+      {devVsProd.fields.updates.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title update">Fields with differences ({devVsProd.fields.updates.length})</div>
+          <div class="pill-row">
+            {devVsProd.fields.updates.map((u: any) => (
+              <span class="pill pill-update">{u.item?.collection}.{u.item?.field} <span style="opacity:0.6;">({u.changes?.length ?? 0})</span></span>
+            ))}
+          </div>
+        </div>
+      )}
+      {devVsProd.relations.creates.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title create">Relations in Dev only ({devVsProd.relations.creates.length})</div>
+          <div class="pill-row">
+            {devVsProd.relations.creates.map((r: any) => (
+              <span class="pill pill-create">{r.collection}.{r.field}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {devVsProd.relations.deletes.length > 0 && (
+        <div class="diff-block">
+          <div class="diff-block-title delete">Relations in Prod only ({devVsProd.relations.deletes.length})</div>
+          <div class="pill-row">
+            {devVsProd.relations.deletes.map((r: any) => (
+              <span class="pill pill-delete">{r.collection}.{r.field}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )}
+
+
+</Layout>
+
+<style>
+.summary-grid { margin-bottom: 32px; }
+
+.section-heading {
+  font-size: 16px;
+  font-weight: 600;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 16px;
+}
+
+/* Diff blocks (dev vs prod) */
+.diff-blocks { display: flex; flex-direction: column; gap: 16px; }
+
+.diff-block {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.diff-block-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.diff-block-title.create { color: var(--color-create); }
+.diff-block-title.delete { color: var(--color-delete); }
+.diff-block-title.update { color: var(--color-update); }
+
+/* Pills */
+.pill-row { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.pill-create { background: rgba(16,185,129,0.15); color: var(--color-create); }
+.pill-delete { background: rgba(248,113,113,0.15); color: var(--color-delete); }
+.pill-update { background: rgba(251,191,36,0.15);  color: var(--color-update); }
+
+/* Delta side-by-side */
+.delta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 800px) { .delta-grid { grid-template-columns: 1fr; } }
+
+.delta-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.delta-panel-heading {
+  padding: 10px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(255,255,255,0.02);
+}
+
+.delta-panel-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+
+.delta-row { display: flex; flex-direction: column; gap: 6px; }
+
+.delta-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.delta-label.create { color: var(--color-create); }
+.delta-label.delete { color: var(--color-delete); }
+.delta-label.update { color: var(--color-update); }
+</style>

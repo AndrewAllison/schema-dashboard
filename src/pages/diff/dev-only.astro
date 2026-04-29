@@ -36,6 +36,32 @@ const fetchedAtStr = fetchedAt ? new Date(fetchedAt).toLocaleString() : 'unknown
 
   {error && <div class="error-banner">⚠️ {error}</div>}
 
+  {devOnlyCount > 0 && (
+    <div class="tip-banner">
+      <strong>GraphQL / prod API drift</strong>
+      <p style="margin-top: 8px;">
+        Directus exposes each collection as a GraphQL type. If your Next app (or codegen) references a type that exists on <strong>dev</strong> but you point <code class="mono">.env</code> at <strong>prod</strong> before promoting schema, Apollo returns <code class="mono">Unknown type &quot;…&quot;</code> — the same family of error as in your server logs.
+      </p>
+      <ul>
+        <li><strong>Identify:</strong> anything listed on this page is absent from prod (or differs). New <strong>collections</strong> below map 1:1 to missing GraphQL type names.</li>
+        <li><strong>Prevent:</strong> promote collections/fields/relations to prod (or QA) <em>before</em> traffic or previews use that API; or keep local env on dev until the CMS matches.</li>
+        <li><strong>After promote:</strong> restart or clear schema-aware caches; re-run GraphQL codegen if you use it so documents match the live schema.</li>
+      </ul>
+      {collections.creates.length > 0 && (
+        <div>
+          <div style="margin-top: 10px; color: var(--color-text); font-size: 12px;">
+            Dev-only collections (GraphQL type names missing on prod until applied):
+          </div>
+          <div class="tip-banner-type-list">
+            {collections.creates.map((c: any) => (
+              <div><code class="mono">{c.collection}</code></div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )}
+
   {devOnlyCount === 0 && <p class="empty">Nothing in dev only — schemas are in sync for this category.</p>}
 
   <!-- Collections -->

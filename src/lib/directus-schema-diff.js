@@ -126,6 +126,7 @@ function listMatched(dev, prod, prefix, showNoise) {
 }
 
 function filterSnapshot(snapshot, prefix) {
+  if (!snapshot) return { collections: [], fields: [], relations: [] };
   if (!prefix) return snapshot;
   const keep = name => name.startsWith(prefix);
   return {

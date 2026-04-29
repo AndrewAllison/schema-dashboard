@@ -3,6 +3,38 @@ import Layout from '../../components/Layout.astro';
 const res = await fetch(new URL('/api/diff', Astro.url));
 const data = await res.json();
 
+// Fetch most-recent snapshot delta for the "Recent Schema Changes" section
+let recentDelta: { devDelta: any; prodDelta: any; prevTimestamp: string | null; snapshot: any } | null = null;
+try {
+  const historyRes  = await fetch(new URL('/api/history/index', Astro.url));
+  const allSnapshots: any[] = historyRes.ok ? await historyRes.json() : [];
+  // listSnapshots() returns newest-first
+  const latestSnap  = allSnapshots[0] ?? null;
+  if (latestSnap?.id) {
+    const snapRes = await fetch(new URL(`/api/history/${latestSnap.id}`, Astro.url));
+    if (snapRes.ok) {
+      const snapData = await snapRes.json();
+      recentDelta = {
+        devDelta:      snapData.devDelta  ?? null,
+        prodDelta:     snapData.prodDelta ?? null,
+        prevTimestamp: snapData.prevTimestamp ?? null,
+        snapshot:      snapData.snapshot,
+      };
+    }
+  }
+} catch {
+  // Non-fatal — dashboard still works without the recent-changes section
+}
+
+function deltaTotal(d: any): number {
+  if (!d?.collections) return 0;
+  return (
+    (d.collections.creates?.length ?? 0) + (d.collections.updates?.length ?? 0) + (d.collections.deletes?.length ?? 0) +
+    (d.fields?.creates?.length     ?? 0) + (d.fields?.updates?.length     ?? 0) + (d.fields?.deletes?.length     ?? 0) +
+    (d.relations?.creates?.length  ?? 0) + (d.relations?.updates?.length  ?? 0) + (d.relations?.deletes?.length  ?? 0)
+  );
+}
+
 const diff = data.diff ?? { collections: { creates: [], updates: [], deletes: [] }, fields: { creates: [], updates: [], deletes: [] }, relations: { creates: [], updates: [], deletes: [] } };
 const renames = data.renames ?? [];
 const matched = data.matched ?? { collections: [], fields: [], relations: [] };
@@ -190,6 +222,162 @@ const error = data.error;
       </div>
     </div>
   )}
+
+  <!-- ── Recent Schema Changes ─────────────────────────────────────── -->
+  {recentDelta && (
+    <div class="recent-section">
+      <div class="recent-heading">
+        <div>
+          <span class="recent-title">Recent Schema Changes</span>
+          <span class="recent-meta">
+            Snapshot taken {new Date(recentDelta.snapshot.timestamp).toLocaleString()}
+            {recentDelta.prevTimestamp && <> · compared to {new Date(recentDelta.prevTimestamp).toLocaleString()}</>}
+          </span>
+        </div>
+        <a href={`/history/${recentDelta.snapshot.id}`} class="btn">View full snapshot →</a>
+      </div>
+
+      {(recentDelta.devDelta === null && recentDelta.prodDelta === null) ? (
+        <p class="empty" style="font-size: 13px; padding: 0 4px;">This is the first snapshot — no previous state to compare against.</p>
+      ) : (
+        <div class="recent-delta-grid">
+          <!-- Dev changes -->
+          <div class="recent-panel">
+            <div class="recent-panel-heading">Dev Changes</div>
+            <div class="recent-panel-body">
+              {deltaTotal(recentDelta.devDelta) === 0 ? (
+                <p class="empty" style="font-size: 13px;">No changes in dev since the previous snapshot.</p>
+              ) : (
+                <>
+                  {recentDelta.devDelta!.collections.creates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label create">+ {recentDelta.devDelta!.collections.creates.length} collection{recentDelta.devDelta!.collections.creates.length !== 1 ? 's' : ''} added</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.collections.creates.map((c: any) => <span class="rpill rpill-create">{c.collection}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.collections.deletes.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label delete">− {recentDelta.devDelta!.collections.deletes.length} collection{recentDelta.devDelta!.collections.deletes.length !== 1 ? 's' : ''} removed</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.collections.deletes.map((c: any) => <span class="rpill rpill-delete">{c.collection}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.collections.updates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label update">~ {recentDelta.devDelta!.collections.updates.length} collection{recentDelta.devDelta!.collections.updates.length !== 1 ? 's' : ''} modified</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.collections.updates.map((u: any) => <span class="rpill rpill-update">{u.item?.collection}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.fields.creates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label create">+ {recentDelta.devDelta!.fields.creates.length} field{recentDelta.devDelta!.fields.creates.length !== 1 ? 's' : ''} added</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.fields.creates.map((f: any) => <span class="rpill rpill-create">{f.collection}.{f.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.fields.deletes.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label delete">− {recentDelta.devDelta!.fields.deletes.length} field{recentDelta.devDelta!.fields.deletes.length !== 1 ? 's' : ''} removed</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.fields.deletes.map((f: any) => <span class="rpill rpill-delete">{f.collection}.{f.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.fields.updates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label update">~ {recentDelta.devDelta!.fields.updates.length} field{recentDelta.devDelta!.fields.updates.length !== 1 ? 's' : ''} modified</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.fields.updates.map((u: any) => <span class="rpill rpill-update">{u.item?.collection}.{u.item?.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.relations.creates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label create">+ {recentDelta.devDelta!.relations.creates.length} relation{recentDelta.devDelta!.relations.creates.length !== 1 ? 's' : ''} added</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.relations.creates.map((r: any) => <span class="rpill rpill-create">{r.collection}.{r.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.relations.deletes.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label delete">− {recentDelta.devDelta!.relations.deletes.length} relation{recentDelta.devDelta!.relations.deletes.length !== 1 ? 's' : ''} removed</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.relations.deletes.map((r: any) => <span class="rpill rpill-delete">{r.collection}.{r.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.devDelta!.relations.updates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label update">~ {recentDelta.devDelta!.relations.updates.length} relation{recentDelta.devDelta!.relations.updates.length !== 1 ? 's' : ''} modified</span>
+                      <div class="rpill-row">{recentDelta.devDelta!.relations.updates.map((u: any) => <span class="rpill rpill-update">{u.item?.collection}.{u.item?.field}</span>)}</div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <!-- Prod changes -->
+          <div class="recent-panel">
+            <div class="recent-panel-heading">Prod Changes</div>
+            <div class="recent-panel-body">
+              {deltaTotal(recentDelta.prodDelta) === 0 ? (
+                <p class="empty" style="font-size: 13px;">No changes in prod since the previous snapshot.</p>
+              ) : (
+                <>
+                  {recentDelta.prodDelta!.collections.creates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label create">+ {recentDelta.prodDelta!.collections.creates.length} collection{recentDelta.prodDelta!.collections.creates.length !== 1 ? 's' : ''} added</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.collections.creates.map((c: any) => <span class="rpill rpill-create">{c.collection}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.collections.deletes.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label delete">− {recentDelta.prodDelta!.collections.deletes.length} collection{recentDelta.prodDelta!.collections.deletes.length !== 1 ? 's' : ''} removed</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.collections.deletes.map((c: any) => <span class="rpill rpill-delete">{c.collection}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.collections.updates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label update">~ {recentDelta.prodDelta!.collections.updates.length} collection{recentDelta.prodDelta!.collections.updates.length !== 1 ? 's' : ''} modified</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.collections.updates.map((u: any) => <span class="rpill rpill-update">{u.item?.collection}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.fields.creates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label create">+ {recentDelta.prodDelta!.fields.creates.length} field{recentDelta.prodDelta!.fields.creates.length !== 1 ? 's' : ''} added</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.fields.creates.map((f: any) => <span class="rpill rpill-create">{f.collection}.{f.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.fields.deletes.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label delete">− {recentDelta.prodDelta!.fields.deletes.length} field{recentDelta.prodDelta!.fields.deletes.length !== 1 ? 's' : ''} removed</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.fields.deletes.map((f: any) => <span class="rpill rpill-delete">{f.collection}.{f.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.fields.updates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label update">~ {recentDelta.prodDelta!.fields.updates.length} field{recentDelta.prodDelta!.fields.updates.length !== 1 ? 's' : ''} modified</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.fields.updates.map((u: any) => <span class="rpill rpill-update">{u.item?.collection}.{u.item?.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.relations.creates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label create">+ {recentDelta.prodDelta!.relations.creates.length} relation{recentDelta.prodDelta!.relations.creates.length !== 1 ? 's' : ''} added</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.relations.creates.map((r: any) => <span class="rpill rpill-create">{r.collection}.{r.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.relations.deletes.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label delete">− {recentDelta.prodDelta!.relations.deletes.length} relation{recentDelta.prodDelta!.relations.deletes.length !== 1 ? 's' : ''} removed</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.relations.deletes.map((r: any) => <span class="rpill rpill-delete">{r.collection}.{r.field}</span>)}</div>
+                    </div>
+                  )}
+                  {recentDelta.prodDelta!.relations.updates.length > 0 && (
+                    <div class="rdelta-row">
+                      <span class="rdelta-label update">~ {recentDelta.prodDelta!.relations.updates.length} relation{recentDelta.prodDelta!.relations.updates.length !== 1 ? 's' : ''} modified</span>
+                      <div class="rpill-row">{recentDelta.prodDelta!.relations.updates.map((u: any) => <span class="rpill rpill-update">{u.item?.collection}.{u.item?.field}</span>)}</div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )}
 </Layout>
 
 <style>
@@ -261,6 +449,87 @@ const error = data.error;
   font-size: 14px;
   padding-right: 20px;
 }
+
+/* Recent Schema Changes */
+.recent-section {
+  margin-top: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.recent-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.recent-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.recent-meta {
+  display: block;
+  font-size: 11px;
+  color: var(--color-muted);
+  margin-top: 2px;
+}
+
+.recent-delta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+}
+
+@media (max-width: 760px) { .recent-delta-grid { grid-template-columns: 1fr; } }
+
+.recent-panel { border-right: 1px solid var(--color-border); }
+.recent-panel:last-child { border-right: none; }
+
+.recent-panel-heading {
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(255,255,255,0.01);
+}
+
+.recent-panel-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rdelta-row { display: flex; flex-direction: column; gap: 5px; }
+
+.rdelta-label { font-size: 12px; font-weight: 600; }
+.rdelta-label.create { color: var(--color-create); }
+.rdelta-label.delete { color: var(--color-delete); }
+.rdelta-label.update { color: var(--color-update); }
+
+.rpill-row { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.rpill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.rpill-create { background: rgba(16,185,129,0.15); color: var(--color-create); }
+.rpill-delete { background: rgba(248,113,113,0.15); color: var(--color-delete); }
+.rpill-update { background: rgba(251,191,36,0.15);  color: var(--color-update); }
 </style>
 
 <script>
