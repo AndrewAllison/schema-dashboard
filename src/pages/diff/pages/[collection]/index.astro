@@ -130,6 +130,11 @@ function getEnvState(row: MatchedRow): EnvState {
   if (row.dev && row.prod && row.diffs.length > 0)  return 'changed';
   return 'both';
 }
+
+/** Prefer prod permalink/slug as sync source; fallback to dev if needed. */
+function syncPermalinkForRow(row: MatchedRow): string | null {
+  return itemPath(row.prod) ?? itemPath(row.dev);
+}
 ---
 <Layout title={`Pages — ${label}`} active="/diff/pages" counts={counts}>
   <div class="banner">
@@ -251,6 +256,7 @@ function getEnvState(row: MatchedRow): EnvState {
                   <th>Permalink</th>
                   <th style="width: 110px;">Status</th>
                   <th style="width: 100px;">Env</th>
+                  <th style="width: 220px;">Sync</th>
                 </tr>
               </thead>
               <tbody>
@@ -265,6 +271,7 @@ function getEnvState(row: MatchedRow): EnvState {
                     : null;
                   const devPath    = itemPath(row.dev);
                   const prodPath   = itemPath(row.prod);
+                  const syncPath   = syncPermalinkForRow(row);
                   return (
                     <tr data-env={state} class={`row-${state}`}>
                       <td>
@@ -337,6 +344,19 @@ function getEnvState(row: MatchedRow): EnvState {
                         {state === 'both'      && <span class="env-badge env-badge-both">BOTH</span>}
                         {state === 'changed'   && <span class="env-badge env-badge-changed">CHANGED</span>}
                       </td>
+                      <td>
+                        <div class="row-sync-wrap">
+                          <button
+                            class="apply-btn apply-btn-dev permalink-sync-btn"
+                            data-permalink={syncPath ?? ''}
+                            disabled={!syncPath}
+                            title={!syncPath ? 'No permalink/slug available on this row' : `Sync ${syncPath} from prod to dev`}
+                          >
+                            Sync prod→dev
+                          </button>
+                          <span class="row-sync-status"></span>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -381,6 +401,7 @@ function getEnvState(row: MatchedRow): EnvState {
                       <th>Title / Name</th>
                       <th>Permalink</th>
                       <th style="width: 110px;">Status</th>
+                      <th style="width: 220px;">Sync</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -401,6 +422,19 @@ function getEnvState(row: MatchedRow): EnvState {
                         </td>
                         <td>
                           <span class={`chip chip-${item.status}`}>{item.status}</span>
+                        </td>
+                        <td>
+                          <div class="row-sync-wrap">
+                            <button
+                              class="apply-btn apply-btn-dev permalink-sync-btn"
+                              data-permalink={itemPath(item) ?? ''}
+                              disabled={!itemPath(item)}
+                              title={!itemPath(item) ? 'No permalink/slug available on this row' : `Sync ${itemPath(item)} from prod to dev`}
+                            >
+                              Sync prod→dev
+                            </button>
+                            <span class="row-sync-status"></span>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -659,6 +693,18 @@ function getEnvState(row: MatchedRow): EnvState {
   font-size: 13px;
   font-style: italic;
 }
+
+/* ── Row sync action ─────────────────────────────────────────────────────── */
+.row-sync-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.row-sync-status {
+  font-size: 11px;
+  color: var(--color-muted);
+  min-height: 14px;
+}
 </style>
 
 <script>
@@ -705,4 +751,93 @@ if (toggleContainer && table) {
     allBtn.classList.remove('toggle-btn-active');
   }
 }
+
+// ── Per-row permalink deep sync (prod -> dev) ────────────────────────────
+async function runPermalinkSync(btn: HTMLButtonElement) {
+  const permalink = (btn.dataset.permalink ?? '').trim();
+  const statusEl = btn.parentElement?.querySelector<HTMLElement>('.row-sync-status');
+  if (!permalink || !statusEl) return;
+
+  if (btn.dataset.state === 'loading') return;
+  btn.dataset.state = 'loading';
+  btn.disabled = true;
+  statusEl.style.color = 'var(--color-muted)';
+  statusEl.textContent = 'Planning…';
+
+  try {
+    const dryRes = await fetch('/api/content-sync/permalink', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        permalink,
+        mode: 'dry-run',
+        depth: 'deep',
+        targetStrategy: 'update-existing',
+      }),
+    });
+    const dryJson = await dryRes.json();
+    if (!dryRes.ok || !dryJson.ok) {
+      throw new Error(dryJson.error ?? `Dry-run failed (${dryRes.status})`);
+    }
+
+    const warnCount = Array.isArray(dryJson.warnings) ? dryJson.warnings.length : 0;
+    const nodeCount = Number(dryJson?.plan?.nodeCount ?? 0);
+    const proceed = window.confirm(
+      `Dry-run for ${permalink}\n` +
+      `Nodes planned: ${nodeCount}\n` +
+      `Warnings: ${warnCount}\n\n` +
+      `Proceed with apply (prod → dev)?`
+    );
+    if (!proceed) {
+      statusEl.textContent = `Dry-run ok (${nodeCount} nodes).`;
+      btn.dataset.state = 'idle';
+      btn.disabled = false;
+      return;
+    }
+
+    statusEl.textContent = 'Applying…';
+    const applyRes = await fetch('/api/content-sync/permalink', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        permalink,
+        mode: 'apply',
+        depth: 'deep',
+        targetStrategy: 'update-existing',
+        confirmApply: true,
+      }),
+    });
+    const applyJson = await applyRes.json();
+    if (!applyRes.ok || !applyJson.ok) {
+      throw new Error(applyJson.error ?? `Apply failed (${applyRes.status})`);
+    }
+
+    const s = applyJson.summary ?? {};
+    const created = Number(s.created ?? 0);
+    const updated = Number(s.updated ?? 0);
+    const relPatched = Number(s.relationPatched ?? 0);
+    const errors = Number(s.errors ?? 0);
+    statusEl.style.color = errors > 0 ? 'var(--color-error)' : 'var(--color-success)';
+    statusEl.textContent = errors > 0
+      ? `Completed with ${errors} error(s).`
+      : `Done (c:${created} u:${updated} r:${relPatched}).`;
+    btn.dataset.state = errors > 0 ? 'error' : 'success';
+  } catch (err: unknown) {
+    statusEl.style.color = 'var(--color-error)';
+    statusEl.textContent = err instanceof Error ? err.message : String(err);
+    btn.dataset.state = 'error';
+    btn.disabled = false;
+    return;
+  }
+
+  if (btn.dataset.state !== 'success') {
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const btn = (e.target as Element).closest<HTMLButtonElement>('.permalink-sync-btn');
+  if (!btn) return;
+  runPermalinkSync(btn);
+});
 </script>

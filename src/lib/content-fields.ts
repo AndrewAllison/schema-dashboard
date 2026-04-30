@@ -1,4 +1,4 @@
-import { filterSnapshot } from '@diff';
+import { filterSnapshot } from './directus-schema-diff.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

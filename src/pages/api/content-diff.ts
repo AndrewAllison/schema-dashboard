@@ -1,11 +1,16 @@
 import type { APIRoute } from 'astro';
 import { DEV_TOKEN, DEV_URL, PROD_TOKEN, PROD_URL, COLLECTION_PREFIX } from '../../lib/env';
-import { fetchSnapshot, filterSnapshot } from '@diff';
+import { fetchSnapshot } from '@diff';
 import {
   mergeScalarFieldMeta,
   computeFieldNameDiffs,
   type ScalarFieldMeta,
 } from '../../lib/content-fields';
+import {
+  findParentFkField,
+  getBlockInfoByPage,
+  getPageCollections,
+} from '../../lib/content-sync-graph';
 
 const TTL_MS = 5 * 60 * 1000;
 
@@ -77,75 +82,6 @@ function formatLabel(collection: string, prefix: string): string {
     .split('_')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
-}
-
-function isBlockJunctionName(name: string): boolean {
-  return /_blocks$/.test(name) || /_block_/.test(name) || /_blocks_/.test(name);
-}
-
-function getPageCollections(snapshot: any, prefix: string): {
-  names: string[];
-  fieldsByCollection: Map<string, string[]>;
-} {
-  const filtered = filterSnapshot(snapshot, prefix);
-  const fieldsByCollection = new Map<string, string[]>();
-  for (const f of (filtered.fields ?? [])) {
-    if (!fieldsByCollection.has(f.collection)) fieldsByCollection.set(f.collection, []);
-    fieldsByCollection.get(f.collection)!.push(f.field as string);
-  }
-  const names = (filtered.collections ?? [])
-    .filter((c: any) => {
-      const name: string = c.collection;
-      if (isBlockJunctionName(name)) return false;
-      const fields = fieldsByCollection.get(name) ?? [];
-      return fields.includes('status');
-    })
-    .map((c: any) => c.collection as string);
-  return { names, fieldsByCollection };
-}
-
-function getBlockInfoByPage(
-  snapshot: any,
-  prefix: string,
-  pageCollectionNames: string[],
-): Map<string, { junctionCollection: string; allowedBlockTypes: string[] }> {
-  const filtered = filterSnapshot(snapshot, prefix);
-  const blockInfoByPage = new Map<string, { junctionCollection: string; allowedBlockTypes: string[] }>();
-  for (const rel of (filtered.relations ?? [])) {
-    const allowed: string[] | undefined = rel.meta?.one_allowed_collections;
-    if (Array.isArray(allowed) && allowed.length > 0) {
-      const junctionName: string = rel.collection;
-      for (const pageName of pageCollectionNames) {
-        if (junctionName.startsWith(pageName + '_')) {
-          blockInfoByPage.set(pageName, {
-            junctionCollection: junctionName,
-            allowedBlockTypes: allowed,
-          });
-          break;
-        }
-      }
-    }
-  }
-  return blockInfoByPage;
-}
-
-/** Find the FK field on the junction table pointing back to the parent collection. */
-function findParentFkField(
-  junctionCollection: string,
-  parentCollection: string,
-  snapshot: any,
-  prefix: string,
-): string | null {
-  const filtered = filterSnapshot(snapshot, prefix);
-  for (const rel of (filtered.relations ?? [])) {
-    if (
-      rel.collection === junctionCollection &&
-      rel.meta?.one_collection === parentCollection
-    ) {
-      return rel.field as string;
-    }
-  }
-  return null;
 }
 
 interface FetchItemsResult {
