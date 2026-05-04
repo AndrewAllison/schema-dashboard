@@ -54,3 +54,10 @@ Diff results are cached for 5 minutes (in-process + `.diff-cache.json`). Use the
 | `DIRECTUS_DEV_URL` | | `https://directus-ct-shared.gpillar-dev.global.com` |
 | `DIRECTUS_PROD_URL` | | `https://directus-ct-shared.gpillar-prod.global.com` |
 | `DIRECTUS_COLLECTION_PREFIX` | | `adpower_redesign` |
+
+## Recent changes
+
+- Added deep permalink sync hardening for nested M2M/M2A page-builder structures so block traversal is more reliable.
+- Added an `overwrite-dev` sync strategy for permalink sync to replace existing dev junction rows before replaying prod content.
+- Added missing file copy support during sync: if a referenced `directus_files` record is not already in dev, the asset is downloaded from prod and uploaded to dev.
+- Added a sync mode selector in the page diff UI so users can choose between safe updates and overwrite behavior per run.
