@@ -106,7 +106,14 @@ export function getRelationEdges(snapshot: any, prefix: string, collection: stri
     .map((rel: any) => ({
       collection,
       field: rel.field as string,
-      relatedCollection: (rel.related_collection ?? rel.meta?.one_collection ?? null) as string | null,
+      relatedCollection: (
+        rel.related_collection
+        // Directus M2M alias fields live on the "one" collection and point to a junction table.
+        // For graph traversal we need the junction collection, not meta.one_collection.
+        ?? (rel.meta?.many_collection && rel.meta?.one_collection === collection ? rel.meta.many_collection : null)
+        ?? rel.meta?.one_collection
+        ?? null
+      ) as string | null,
       meta: rel.meta,
       raw: rel,
     }));

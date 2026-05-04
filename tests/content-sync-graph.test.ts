@@ -4,6 +4,7 @@ import {
   findParentFkField,
   getBlockInfoByPage,
   getPageCollections,
+  getRelationEdges,
 } from '../src/lib/content-sync-graph.ts';
 
 function makeSnapshot() {
@@ -25,6 +26,16 @@ function makeSnapshot() {
       { collection: 'adpower_redesign_pages_blocks_link', field: 'item', type: 'integer' },
     ],
     relations: [
+      {
+        collection: 'adpower_redesign_pages',
+        field: 'blocks',
+        related_collection: null,
+        meta: {
+          one_collection: 'adpower_redesign_pages',
+          many_collection: 'adpower_redesign_pages_blocks_link',
+          junction_field: 'item',
+        },
+      },
       {
         collection: 'adpower_redesign_pages_blocks_link',
         field: 'item',
@@ -69,4 +80,12 @@ test('findParentFkField resolves parent foreign key for custom junction names', 
     'adpower_redesign',
   );
   assert.equal(fk, 'page_id');
+});
+
+test('getRelationEdges resolves m2m alias to junction collection', () => {
+  const snap = makeSnapshot();
+  const edges = getRelationEdges(snap, 'adpower_redesign', 'adpower_redesign_pages');
+  assert.equal(edges.length, 1);
+  assert.equal(edges[0]?.field, 'blocks');
+  assert.equal(edges[0]?.relatedCollection, 'adpower_redesign_pages_blocks_link');
 });

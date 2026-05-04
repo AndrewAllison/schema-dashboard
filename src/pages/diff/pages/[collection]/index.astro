@@ -174,6 +174,14 @@ function syncPermalinkForRow(row: MatchedRow): string | null {
 
   {!notFound && (
     <>
+      <div class="sync-strategy-bar">
+        <label for="sync-target-strategy">Sync mode:</label>
+        <select id="sync-target-strategy" class="sync-strategy-select">
+          <option value="update-existing">Update existing (safe)</option>
+          <option value="overwrite-dev">Overwrite dev (replace blocks)</option>
+        </select>
+      </div>
+
       <!-- Status breakdown pills (prod) -->
       {sortedStatuses.length > 0 && (
         <div class="status-row">
@@ -705,6 +713,22 @@ function syncPermalinkForRow(row: MatchedRow): string | null {
   color: var(--color-muted);
   min-height: 14px;
 }
+.sync-strategy-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 14px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.sync-strategy-select {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
 </style>
 
 <script>
@@ -757,6 +781,9 @@ async function runPermalinkSync(btn: HTMLButtonElement) {
   const permalink = (btn.dataset.permalink ?? '').trim();
   const statusEl = btn.parentElement?.querySelector<HTMLElement>('.row-sync-status');
   if (!permalink || !statusEl) return;
+  const strategyEl = document.getElementById('sync-target-strategy') as HTMLSelectElement | null;
+  const targetStrategy = strategyEl?.value === 'overwrite-dev' ? 'overwrite-dev' : 'update-existing';
+  const overwriteMode = targetStrategy === 'overwrite-dev';
 
   if (btn.dataset.state === 'loading') return;
   btn.dataset.state = 'loading';
@@ -772,7 +799,7 @@ async function runPermalinkSync(btn: HTMLButtonElement) {
         permalink,
         mode: 'dry-run',
         depth: 'deep',
-        targetStrategy: 'update-existing',
+        targetStrategy,
       }),
     });
     const dryJson = await dryRes.json();
@@ -784,8 +811,10 @@ async function runPermalinkSync(btn: HTMLButtonElement) {
     const nodeCount = Number(dryJson?.plan?.nodeCount ?? 0);
     const proceed = window.confirm(
       `Dry-run for ${permalink}\n` +
+      `Mode: ${overwriteMode ? 'overwrite dev' : 'update existing'}\n` +
       `Nodes planned: ${nodeCount}\n` +
       `Warnings: ${warnCount}\n\n` +
+      `${overwriteMode ? 'This will delete existing dev block junction rows for this page before replay.\n\n' : ''}` +
       `Proceed with apply (prod → dev)?`
     );
     if (!proceed) {
@@ -803,7 +832,7 @@ async function runPermalinkSync(btn: HTMLButtonElement) {
         permalink,
         mode: 'apply',
         depth: 'deep',
-        targetStrategy: 'update-existing',
+        targetStrategy,
         confirmApply: true,
       }),
     });

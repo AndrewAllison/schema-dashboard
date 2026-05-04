@@ -19,12 +19,13 @@ import { bustContentDiffCache } from '../content-diff';
 import { bustAllContentItemCache } from '../content-item';
 
 type Mode = 'dry-run' | 'apply';
+type TargetStrategy = 'update-existing' | 'overwrite-dev';
 
 interface PermalinkSyncPayload {
   permalink: string;
   mode?: Mode;
   depth?: 'deep';
-  targetStrategy?: 'update-existing';
+  targetStrategy?: TargetStrategy;
   confirmApply?: boolean;
 }
 
@@ -33,6 +34,18 @@ interface PlanStep {
   sourceId: string | number;
   isRoot: boolean;
   isJunction: boolean;
+}
+
+function resolveEdgeCollectionFromItem(
+  edge: { relatedCollection: string | null; meta: any },
+  item: Record<string, unknown>,
+): string | null {
+  if (edge.relatedCollection) return edge.relatedCollection;
+  const meta = edge.meta ?? {};
+  const collectionField = typeof meta.one_collection_field === 'string' ? meta.one_collection_field : null;
+  if (!collectionField) return null;
+  const raw = item[collectionField];
+  return typeof raw === 'string' && raw.trim() ? raw : null;
 }
 
 function sanitizePermalink(input: string): string {
@@ -123,6 +136,44 @@ async function fetchItemsByParent(
   return Array.isArray(json?.data) ? json.data : [];
 }
 
+async function deleteItemById(
+  base: string,
+  token: string,
+  collection: string,
+  id: string | number,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${base}/items/${collection}/${encodeURIComponent(String(id))}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.ok) return { ok: true };
+  const txt = await res.text().catch(() => '');
+  return { ok: false, error: `HTTP ${res.status}: ${txt || 'delete failed'}` };
+}
+
+async function clearJunctionRowsForPage(
+  base: string,
+  token: string,
+  junctionCollection: string,
+  parentField: string,
+  parentId: string | number,
+): Promise<{ deleted: number; errors: string[] }> {
+  const rows = await fetchItemsByParent(base, token, junctionCollection, parentField, parentId);
+  let deleted = 0;
+  const errors: string[] = [];
+  for (const row of rows) {
+    const rowId = row.id as string | number | undefined;
+    if (rowId == null) continue;
+    const del = await deleteItemById(base, token, junctionCollection, rowId);
+    if (del.ok) {
+      deleted++;
+    } else {
+      errors.push(`Failed deleting ${junctionCollection}/${String(rowId)}: ${del.error ?? 'unknown error'}`);
+    }
+  }
+  return { deleted, errors };
+}
+
 async function buildDeepGraph(
   prodBase: string,
   prodToken: string,
@@ -182,9 +233,10 @@ async function buildDeepGraph(
     // Generic outgoing relations.
     const edges = getRelationEdges(prodSnapshot, prefix, next.collection);
     for (const edge of edges) {
+      const fallbackCollection = resolveEdgeCollectionFromItem(edge, item);
       const refs = extractRefs(item[edge.field]);
       for (const ref of refs) {
-        const refCollection = ref.collection ?? edge.relatedCollection;
+        const refCollection = ref.collection ?? fallbackCollection;
         if (!refCollection) continue;
         queue.push({ collection: refCollection, sourceId: ref.sourceId });
       }
@@ -226,9 +278,10 @@ async function buildDeepGraph(
 
         const jEdges = getRelationEdges(prodSnapshot, prefix, blockInfo.junctionCollection);
         for (const edge of jEdges) {
+          const fallbackCollection = resolveEdgeCollectionFromItem(edge, row);
           const refs = extractRefs(row[edge.field]);
           for (const ref of refs) {
-            const refCollection = ref.collection ?? edge.relatedCollection;
+            const refCollection = ref.collection ?? fallbackCollection;
             if (!refCollection) continue;
             queue.push({ collection: refCollection, sourceId: ref.sourceId });
           }
@@ -293,7 +346,9 @@ export const POST: APIRoute = async ({ request }) => {
   const permalink = sanitizePermalink(payload.permalink ?? '');
   const mode: Mode = payload.mode === 'apply' ? 'apply' : 'dry-run';
   const depth = payload.depth ?? 'deep';
-  const targetStrategy = payload.targetStrategy ?? 'update-existing';
+  const targetStrategy: TargetStrategy = payload.targetStrategy === 'overwrite-dev'
+    ? 'overwrite-dev'
+    : 'update-existing';
   const confirmApply = payload.confirmApply === true;
 
   if (!permalink) {
@@ -308,8 +363,8 @@ export const POST: APIRoute = async ({ request }) => {
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (targetStrategy !== 'update-existing') {
-    return new Response(JSON.stringify({ ok: false, error: 'Only targetStrategy="update-existing" is currently supported.' }), {
+  if (targetStrategy !== 'update-existing' && targetStrategy !== 'overwrite-dev') {
+    return new Response(JSON.stringify({ ok: false, error: 'targetStrategy must be "update-existing" or "overwrite-dev".' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -429,6 +484,7 @@ export const POST: APIRoute = async ({ request }) => {
 
   const plan = {
     permalink,
+    targetStrategy,
     rootCollection,
     rootSourceId: rootItem.id as string | number,
     nodeCount: graph.nodes.length,
@@ -454,6 +510,53 @@ export const POST: APIRoute = async ({ request }) => {
     });
   }
 
+  const overwriteDev = targetStrategy === 'overwrite-dev';
+  const cleanupWarnings: SyncWarning[] = [];
+  const cleanupOperations: SyncOperation[] = [];
+  if (overwriteDev) {
+    const pageCollections = getPageCollections(prodSnapshot, prefix).names;
+    const blockInfo = getBlockInfoByPage(prodSnapshot, prefix, pageCollections).get(rootCollection) ?? null;
+    const rootParentFk = blockInfo
+      ? findParentFkField(blockInfo.junctionCollection, rootCollection, prodSnapshot, prefix)
+      : null;
+    const devRootItem = await fetchFirstByPermalink(devBase, devToken, rootCollection, permalink);
+
+    if (blockInfo && rootParentFk && devRootItem?.id != null) {
+      const cleanup = await clearJunctionRowsForPage(
+        devBase,
+        devToken,
+        blockInfo.junctionCollection,
+        rootParentFk,
+        devRootItem.id as string | number,
+      );
+
+      cleanupOperations.push({
+        phase: 'junctions',
+        collection: blockInfo.junctionCollection,
+        sourceId: devRootItem.id as string | number,
+        targetId: devRootItem.id as string | number,
+        action: 'update',
+        message: `Overwrite mode: deleted ${cleanup.deleted} existing dev junction rows for this page.`,
+      });
+
+      for (const err of cleanup.errors) {
+        cleanupWarnings.push({
+          code: 'unresolved-relation',
+          collection: blockInfo.junctionCollection,
+          sourceId: devRootItem.id as string | number,
+          detail: err,
+        });
+      }
+    } else {
+      cleanupWarnings.push({
+        code: 'unresolved-relation',
+        collection: rootCollection,
+        sourceId: rootItem.id as string | number,
+        detail: 'Overwrite mode requested but no dev root item or block junction mapping was found; junction cleanup skipped.',
+      });
+    }
+  }
+
   const replay = await replayDeepGraphToDev({
     prodSnapshot,
     devSnapshot,
@@ -464,7 +567,12 @@ export const POST: APIRoute = async ({ request }) => {
     devToken,
     nodes: graph.nodes,
     updateExisting: true,
+    overwriteExisting: overwriteDev,
   });
+
+  if (cleanupOperations.length > 0) {
+    replay.operations.unshift(...cleanupOperations);
+  }
 
   const validateOp = await validateReplay(devBase, devToken, rootCollection, permalink);
   replay.operations.push(validateOp);
@@ -480,7 +588,7 @@ export const POST: APIRoute = async ({ request }) => {
     plan,
     idMap: replay.idMap,
     operations: replay.operations,
-    warnings: [...graph.warnings, ...fieldWarnings, ...replay.warnings],
+    warnings: [...graph.warnings, ...fieldWarnings, ...cleanupWarnings, ...replay.warnings],
   }), {
     headers: { 'Content-Type': 'application/json' },
   });

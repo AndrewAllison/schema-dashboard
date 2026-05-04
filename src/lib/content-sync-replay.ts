@@ -59,6 +59,7 @@ interface ReplayOptions {
   devToken: string;
   nodes: SyncGraphNode[];
   updateExisting: boolean;
+  overwriteExisting: boolean;
 }
 
 type IdMaps = Map<string, Map<string, string | number>>;
@@ -185,8 +186,130 @@ async function findDevFileBySignature(
   return json?.data?.[0]?.id ?? null;
 }
 
+async function fetchProdFileMetaById(
+  base: string,
+  token: string,
+  fileId: string | number,
+): Promise<Record<string, unknown> | null> {
+  const endpoints = [
+    `${base}/files/${encodeURIComponent(String(fileId))}`,
+    `${base}/items/directus_files/${encodeURIComponent(String(fileId))}?fields=*`,
+  ];
+  for (const url of endpoints) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) continue;
+    const json = await parseJsonSafe(res);
+    const data = json?.data ?? null;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      return data as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+async function downloadProdAsset(
+  base: string,
+  token: string,
+  fileId: string | number,
+): Promise<{ ok: true; blob: Blob } | { ok: false; error: string }> {
+  const url = `${base}/assets/${encodeURIComponent(String(fileId))}?download`;
+  let res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    const withToken = `${url}&access_token=${encodeURIComponent(token)}`;
+    res = await fetch(withToken);
+  }
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    return { ok: false, error: `Asset download failed (${res.status}): ${txt.slice(0, 200)}` };
+  }
+  const blob = await res.blob();
+  return { ok: true, blob };
+}
+
+async function uploadDevFile(
+  base: string,
+  token: string,
+  fileBlob: Blob,
+  srcFile: Record<string, unknown>,
+): Promise<{ id: string | number | null; error?: string }> {
+  const form = new FormData();
+  const filename =
+    (typeof srcFile.filename_download === 'string' && srcFile.filename_download.trim())
+    || (typeof srcFile.filename_disk === 'string' && srcFile.filename_disk.trim())
+    || (typeof srcFile.title === 'string' && srcFile.title.trim())
+    || 'synced-file';
+  form.append('file', fileBlob, filename);
+  if (typeof srcFile.title === 'string' && srcFile.title.trim()) {
+    form.append('title', srcFile.title);
+  }
+  if (typeof srcFile.description === 'string' && srcFile.description.trim()) {
+    form.append('description', srcFile.description);
+  }
+  if (typeof srcFile.folder === 'string' || typeof srcFile.folder === 'number') {
+    form.append('folder', String(srcFile.folder));
+  }
+
+  const res = await fetch(`${base}/files`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const json = await parseJsonSafe(res);
+    return { id: null, error: `HTTP ${res.status}: ${json?.errors?.[0]?.message ?? json?.raw ?? 'file upload failed'}` };
+  }
+  const json = await parseJsonSafe(res);
+  return { id: json?.data?.id ?? null };
+}
+
+async function ensureDevFileMapped(
+  opts: ReplayOptions,
+  idMap: IdMaps,
+  sourceId: string | number,
+  srcFile: Record<string, unknown> | null,
+): Promise<{ id: string | number | null; created: boolean; error?: string }> {
+  let fileMeta = srcFile;
+  if (!fileMeta) {
+    fileMeta = await fetchProdFileMetaById(opts.prodBase, opts.prodToken, sourceId);
+  }
+  if (!fileMeta) {
+    return { id: null, created: false, error: 'Could not fetch source file metadata from prod.' };
+  }
+
+  const existing = await findDevFileBySignature(opts.devBase, opts.devToken, fileMeta);
+  if (existing != null) {
+    putIdMap(idMap, 'directus_files', sourceId, existing);
+    return { id: existing, created: false };
+  }
+
+  const download = await downloadProdAsset(opts.prodBase, opts.prodToken, sourceId);
+  if (!download.ok) {
+    return { id: null, created: false, error: download.error };
+  }
+
+  const upload = await uploadDevFile(opts.devBase, opts.devToken, download.blob, fileMeta);
+  if (!upload.id) {
+    return { id: null, created: false, error: upload.error ?? 'file upload failed' };
+  }
+
+  putIdMap(idMap, 'directus_files', sourceId, upload.id);
+  return { id: upload.id, created: true };
+}
+
 function isObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function resolveEdgeRelatedCollection(
+  edge: { relatedCollection: string | null; meta: any },
+  item: Record<string, unknown>,
+): string | null {
+  if (edge.relatedCollection) return edge.relatedCollection;
+  const meta = edge.meta ?? {};
+  const collectionField = typeof meta.one_collection_field === 'string' ? meta.one_collection_field : null;
+  if (!collectionField) return null;
+  const raw = item[collectionField];
+  return typeof raw === 'string' && raw.trim() ? raw : null;
 }
 
 async function mapRelationValue(
@@ -207,19 +330,21 @@ async function mapRelationValue(
 
     if (collection === 'directus_files') {
       const node = nodeLookup.get(`directus_files:${String(srcId)}`);
-      if (node) {
-        const devId = await findDevFileBySignature(opts.devBase, opts.devToken, node.item);
-        if (devId != null) {
-          putIdMap(idMap, 'directus_files', srcId as string | number, devId);
-          return devId;
-        }
+      const mapped = await ensureDevFileMapped(
+        opts,
+        idMap,
+        srcId as string | number,
+        node?.item ?? null,
+      );
+      if (mapped.id != null) {
+        return mapped.id;
       }
       warnings.push({
         code: 'file-not-found',
         collection: warningCtx.collection,
         field: warningCtx.field,
         sourceId: warningCtx.sourceId,
-        detail: `Could not map file source id ${String(srcId)} to an existing dev file.`,
+        detail: `Could not copy/map file source id ${String(srcId)}: ${mapped.error ?? 'unknown error'}`,
       });
       return null;
     }
@@ -298,33 +423,37 @@ export async function replayDeepGraphToDev(opts: ReplayOptions): Promise<ReplayR
     }
 
     if (node.collection === 'directus_files') {
-      warnings.push({
-        code: 'unsupported-file-create',
-        collection: node.collection,
-        sourceId: node.sourceId,
-        detail: 'File binary copy is not supported by this endpoint; attempting ID mapping only.',
-      });
-      const mapped = await findDevFileBySignature(opts.devBase, opts.devToken, node.item);
-      if (mapped != null) {
-        putIdMap(idMap, node.collection, node.sourceId, mapped);
+      const mapped = await ensureDevFileMapped(opts, idMap, node.sourceId, node.item ?? null);
+      if (mapped.id != null) {
+        putIdMap(idMap, node.collection, node.sourceId, mapped.id);
         operations.push({
           phase: 'upsert',
           collection: node.collection,
           sourceId: node.sourceId,
-          targetId: mapped,
+          targetId: mapped.id,
           action: 'skip',
-          message: 'Mapped to existing dev file by filename/title signature.',
+          message: mapped.created
+            ? 'Copied file asset to dev and mapped id.'
+            : 'Mapped to existing dev file by filename/title signature.',
         });
+        if (mapped.created) summary.created++;
+        else summary.skipped++;
       } else {
+        warnings.push({
+          code: 'file-not-found',
+          collection: node.collection,
+          sourceId: node.sourceId,
+          detail: `Could not copy/map file source id ${String(node.sourceId)}: ${mapped.error ?? 'unknown error'}`,
+        });
         operations.push({
           phase: 'upsert',
           collection: node.collection,
           sourceId: node.sourceId,
           action: 'skip',
-          message: 'No matching dev file found.',
+          message: 'No matching dev file found and copy failed.',
         });
+        summary.skipped++;
       }
-      summary.skipped++;
       continue;
     }
 
@@ -332,7 +461,8 @@ export async function replayDeepGraphToDev(opts: ReplayOptions): Promise<ReplayR
     const body = pickBody(node.item, writable);
     let targetId: string | number | null = null;
 
-    if (opts.updateExisting) {
+    const shouldUpdateExisting = opts.updateExisting && (!opts.overwriteExisting || !!node.isRoot);
+    if (shouldUpdateExisting) {
       targetId = await findExistingTargetItem(opts.devBase, opts.devToken, node.collection, node.item);
     }
 
@@ -396,9 +526,10 @@ export async function replayDeepGraphToDev(opts: ReplayOptions): Promise<ReplayR
     const patchBody: Record<string, unknown> = {};
     for (const edge of edges) {
       if (!(edge.field in node.item)) continue;
+      const relatedCollection = resolveEdgeRelatedCollection(edge, node.item);
       const mappedValue = await mapRelationValue(
         node.item[edge.field],
-        edge.relatedCollection,
+        relatedCollection,
         idMap,
         nodeLookup,
         opts,
@@ -469,9 +600,10 @@ export async function replayDeepGraphToDev(opts: ReplayOptions): Promise<ReplayR
     const edges = getRelationEdges(opts.prodSnapshot, opts.prefix, node.collection);
     for (const edge of edges) {
       if (!(edge.field in node.item)) continue;
+      const relatedCollection = resolveEdgeRelatedCollection(edge, node.item);
       const mapped = await mapRelationValue(
         node.item[edge.field],
-        edge.relatedCollection,
+        relatedCollection,
         idMap,
         nodeLookup,
         opts,
@@ -482,7 +614,8 @@ export async function replayDeepGraphToDev(opts: ReplayOptions): Promise<ReplayR
     }
 
     let targetId: string | number | null = null;
-    if (opts.updateExisting) {
+    const shouldUpdateExisting = opts.updateExisting && !opts.overwriteExisting;
+    if (shouldUpdateExisting) {
       targetId = await findExistingTargetItem(opts.devBase, opts.devToken, node.collection, body);
     }
 
