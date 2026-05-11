@@ -1,0 +1,287 @@
+---
+import Layout from '../components/Layout.astro';
+import { getDiffData } from '../lib/getDiffData';
+import { DEV_URL, PROD_URL } from '../lib/env';
+
+const { counts } = await getDiffData(Astro.url);
+const devAdminBase  = DEV_URL();
+const prodAdminBase = PROD_URL();
+---
+<Layout title="Content Search" active="/search" counts={counts}>
+<div id="env-config" data-dev={devAdminBase} data-prod={prodAdminBase} hidden></div>
+  <div class="banner">
+    <div>
+      <h1>Content Search</h1>
+      <div class="meta">Full-text search across all block and page content in dev &amp; prod</div>
+    </div>
+    <button class="btn" id="rebuild-btn">↻ Rebuild Index</button>
+  </div>
+
+  <div class="search-bar">
+    <input
+      type="search"
+      id="search-input"
+      class="search-input-main"
+      placeholder="Search content across all collections and blocks…"
+      autocomplete="off"
+    />
+    <div class="env-tabs" id="env-tabs">
+      <button class="env-tab active" data-env="both">Both</button>
+      <button class="env-tab" data-env="dev">Dev</button>
+      <button class="env-tab" data-env="prod">Prod</button>
+    </div>
+  </div>
+
+  <div id="search-meta" class="search-meta"></div>
+  <div id="results" class="results-list"></div>
+</Layout>
+
+<style>
+.search-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.search-input-main {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: 15px;
+  outline: none;
+}
+.search-input-main:focus { border-color: var(--color-accent); }
+
+.env-tabs {
+  display: flex;
+  gap: 4px;
+}
+.env-tab {
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.env-tab.active {
+  background: rgba(99,102,241,0.18);
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+.search-meta {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-bottom: 16px;
+  min-height: 18px;
+}
+
+.results-list { display: flex; flex-direction: column; gap: 8px; }
+
+.result-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+.result-card:hover { border-color: var(--color-accent); }
+
+.result-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.result-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-text);
+}
+.result-title a { color: var(--color-text); }
+.result-title a:hover { color: var(--color-accent); }
+
+.env-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+.env-badge-dev  { background: rgba(99,102,241,0.2); color: #a5b4fc; }
+.env-badge-prod { background: rgba(16,185,129,0.2); color: #6ee7b7; }
+
+.collection-badge {
+  font-size: 11px;
+  color: var(--color-muted);
+  background: rgba(255,255,255,0.05);
+  padding: 1px 7px;
+  border-radius: 10px;
+}
+
+.result-fields { display: flex; flex-direction: column; gap: 4px; }
+
+.result-field {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.field-name {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  padding-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.field-value { color: var(--color-text); word-break: break-word; }
+
+.state-msg {
+  color: var(--color-muted);
+  font-size: 13px;
+  padding: 24px 0;
+  text-align: center;
+}
+
+mark.search-hit {
+  background: rgba(251,191,36,0.35);
+  color: var(--color-text);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.edit-link {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+.edit-link:hover { color: var(--color-accent); }
+</style>
+
+<script>
+(function () {
+  const input      = document.getElementById('search-input') as HTMLInputElement;
+  const metaEl     = document.getElementById('search-meta')!;
+  const resultsEl  = document.getElementById('results')!;
+  const envTabs    = document.getElementById('env-tabs')!;
+  const rebuildBtn = document.getElementById('rebuild-btn') as HTMLButtonElement;
+  const envCfg     = document.getElementById('env-config') as HTMLElement;
+  const DEV_BASE   = envCfg.dataset.dev  ?? '';
+  const PROD_BASE  = envCfg.dataset.prod ?? '';
+
+  let currentEnv = 'both';
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  envTabs.addEventListener('click', (e) => {
+    const btn = (e.target as Element).closest<HTMLButtonElement>('.env-tab');
+    if (!btn) return;
+    envTabs.querySelectorAll('.env-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentEnv = btn.dataset.env ?? 'both';
+    runSearch();
+  });
+
+  input.addEventListener('input', () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(runSearch, 220);
+  });
+
+  rebuildBtn.addEventListener('click', async () => {
+    rebuildBtn.disabled = true;
+    rebuildBtn.textContent = 'Rebuilding…';
+    metaEl.textContent = 'Rebuilding index…';
+    await runSearch(true);
+    rebuildBtn.disabled = false;
+    rebuildBtn.textContent = '↻ Rebuild Index';
+  });
+
+  async function runSearch(rebuild = false) {
+    const q = input.value.trim();
+    const params = new URLSearchParams({ q, env: currentEnv });
+    if (rebuild) params.set('rebuild', 'true');
+
+    metaEl.textContent = 'Searching…';
+    resultsEl.innerHTML = '';
+
+    let data: any;
+    try {
+      const res = await fetch(`/api/search?${params}`);
+      data = await res.json();
+    } catch (err) {
+      metaEl.textContent = '';
+      resultsEl.innerHTML = `<div class="state-msg">Error: ${err}</div>`;
+      return;
+    }
+
+    if (data.error) {
+      metaEl.textContent = '';
+      resultsEl.innerHTML = `<div class="state-msg">⚠️ ${data.error}</div>`;
+      return;
+    }
+
+    const hits: any[] = data.hits ?? [];
+    const indexed: number = data.totalIndexed ?? 0;
+    const cols: number = data.collectionCount ?? 0;
+    const age = data.fetchedAt
+      ? Math.round((Date.now() - data.fetchedAt) / 1000) + 's ago'
+      : '';
+
+    if (!q) {
+      metaEl.textContent = `Index: ${indexed} items across ${cols} collections · built ${age}`;
+      resultsEl.innerHTML = `<div class="state-msg">Type to search content across blocks and pages</div>`;
+      return;
+    }
+
+    metaEl.textContent = `${hits.length} hit${hits.length !== 1 ? 's' : ''} in ${indexed} items · ${cols} collections · built ${age}`;
+
+    if (hits.length === 0) {
+      resultsEl.innerHTML = `<div class="state-msg">No results for "${q}"</div>`;
+      return;
+    }
+
+    resultsEl.innerHTML = hits.map((hit: any) => {
+      // Colon is valid unencoded in URL path segments; Astro's SSR adapter does
+      // not decode %3A in catch-all params, so encodeURIComponent breaks routing.
+      const dashboardHref = `/content/${hit.collection}/id:${hit.id}`;
+      const adminBase     = hit.env === 'dev' ? DEV_BASE : PROD_BASE;
+      const editHref      = `${adminBase}/admin/content/${hit.collection}/${hit.id}`;
+
+      const fieldRows = (hit.matchedFields ?? []).map((f: any) => `
+        <div class="result-field">
+          <span class="field-name">${escHtml(f.field)}</span>
+          <span class="field-value">${f.highlighted}</span>
+        </div>
+      `).join('');
+
+      return `
+        <div class="result-card">
+          <div class="result-header">
+            <span class="result-title"><a href="${dashboardHref}">${escHtml(hit.title)}</a></span>
+            <span class="env-badge env-badge-${hit.env}">${hit.env}</span>
+            <span class="collection-badge">${escHtml(hit.label)}</span>
+            <a class="edit-link" href="${editHref}" target="_blank" rel="noopener">Edit in Directus ↗</a>
+          </div>
+          ${fieldRows ? `<div class="result-fields">${fieldRows}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function escHtml(s: string): string {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Load index stats on mount
+  runSearch();
+})();
+</script>
